@@ -7,8 +7,14 @@ import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Server;
 import org.bukkit.command.CommandSender;
-import org.bukkit.command.RemoteConsoleCommandSender;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.AsyncPlayerChatEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.permissions.Permission;
 import org.bukkit.permissions.PermissionAttachment;
 import org.bukkit.permissions.PermissionAttachmentInfo;
@@ -23,13 +29,64 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
-public class PaperBridgePlugin extends JavaPlugin {
+public class PaperBridgePlugin extends JavaPlugin implements Listener {
 
     private HttpServer httpServer;
     private String apiKey;
     private int port;
     private ExecutorService httpExecutor;
+
+    public static class ChatEventItem {
+        public final long id;
+        public final long timestamp;
+        public final String type;
+        public final String sender;
+        public final String message;
+        public volatile boolean read;
+
+        public ChatEventItem(long id, long timestamp, String type, String sender, String message) {
+            this.id = id;
+            this.timestamp = timestamp;
+            this.type = type;
+            this.sender = sender;
+            this.message = message;
+            this.read = false;
+        }
+    }
+
+    private final List<ChatEventItem> eventHistory = new CopyOnWriteArrayList<>();
+    private final AtomicLong eventIdCounter = new AtomicLong(1);
+
+    public void addEvent(String type, String sender, String message) {
+        long id = eventIdCounter.getAndIncrement();
+        long now = System.currentTimeMillis();
+        eventHistory.add(new ChatEventItem(id, now, type, sender, message));
+        while (eventHistory.size() > 500) {
+            eventHistory.remove(0);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onChat(AsyncPlayerChatEvent event) {
+        addEvent("chat", event.getPlayer().getName(), event.getMessage());
+    }
+
+    @EventHandler
+    public void onJoin(PlayerJoinEvent event) {
+        addEvent("join", event.getPlayer().getName(), event.getPlayer().getName() + " joined the game");
+    }
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        addEvent("leave", event.getPlayer().getName(), event.getPlayer().getName() + " left the game");
+    }
+
+    @EventHandler
+    public void onDeath(PlayerDeathEvent event) {
+        addEvent("death", event.getEntity().getName(), event.getDeathMessage() != null ? event.getDeathMessage() : "died");
+    }
 
     @Override
     public void onEnable() {
@@ -46,6 +103,7 @@ public class PaperBridgePlugin extends JavaPlugin {
         }
 
         this.httpExecutor = Executors.newCachedThreadPool();
+        getServer().getPluginManager().registerEvents(this, this);
 
         try {
             startHttpServer();
@@ -81,6 +139,9 @@ public class PaperBridgePlugin extends JavaPlugin {
         httpServer.createContext("/api/command", new CommandHandler());
         httpServer.createContext("/api/chat", new ChatHandler());
         httpServer.createContext("/api/players", new PlayersHandler());
+        httpServer.createContext("/api/chat/history", new ChatHistoryHandler());
+        httpServer.createContext("/api/notifications/feed", new NotificationsFeedHandler());
+        httpServer.createContext("/api/notifications/clear", new NotificationsClearHandler());
 
         httpServer.start();
     }
@@ -138,6 +199,27 @@ public class PaperBridgePlugin extends JavaPlugin {
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
                 .replace("\t", "\\t");
+    }
+
+    private String extractJsonField(String json, String field) {
+        if (json == null) return null;
+        String pattern = "\"" + field + "\"\\s*:\\s*\"([^\"]*)\"";
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(pattern).matcher(json);
+        if (m.find()) {
+            return m.group(1).replace("\\\"", "\"").replace("\\\\", "\\").replace("\\n", "\n");
+        }
+        return null;
+    }
+
+    private String formatEventJson(ChatEventItem item) {
+        return "{"
+                + "\"id\": " + item.id + ","
+                + "\"timestamp\": " + item.timestamp + ","
+                + "\"type\": \"" + escapeJson(item.type) + "\","
+                + "\"sender\": \"" + escapeJson(item.sender) + "\","
+                + "\"message\": \"" + escapeJson(item.message) + "\","
+                + "\"read\": " + item.read
+                + "}";
     }
 
     // ====================================================================
@@ -325,8 +407,12 @@ public class PaperBridgePlugin extends JavaPlugin {
             }
 
             final String formatted = "§b[" + sender + "] §f" + message;
+            final String finalSender = sender;
+            final String finalMsg = message;
+
             Bukkit.getScheduler().runTask(PaperBridgePlugin.this, () -> {
                 Bukkit.broadcastMessage(formatted);
+                addEvent("chat_out", finalSender, finalMsg);
             });
 
             sendJsonResponse(exchange, 200, "{\"ok\": true}");
@@ -364,13 +450,81 @@ public class PaperBridgePlugin extends JavaPlugin {
         }
     }
 
-    private String extractJsonField(String json, String field) {
-        if (json == null) return null;
-        String pattern = "\"" + field + "\"\\s*:\\s*\"([^\"]*)\"";
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile(pattern).matcher(json);
-        if (m.find()) {
-            return m.group(1).replace("\\\"", "\"").replace("\\\\", "\\").replace("\\n", "\n");
+    private class ChatHistoryHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+
+            int limit = 50;
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null && query.contains("limit=")) {
+                try {
+                    for (String part : query.split("&")) {
+                        if (part.startsWith("limit=")) {
+                            limit = Integer.parseInt(part.substring(6));
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            List<String> items = new ArrayList<>();
+            int size = eventHistory.size();
+            int start = Math.max(0, size - limit);
+
+            for (int i = start; i < size; i++) {
+                items.add(formatEventJson(eventHistory.get(i)));
+            }
+
+            String json = "{\"ok\": true, \"count\": " + items.size() + ", \"messages\": [" + String.join(",", items) + "]}";
+            sendJsonResponse(exchange, 200, json);
         }
-        return null;
+    }
+
+    private class NotificationsFeedHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+
+            boolean unreadOnly = true;
+            int limit = 20;
+
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null) {
+                for (String part : query.split("&")) {
+                    if (part.startsWith("unread_only=")) {
+                        unreadOnly = Boolean.parseBoolean(part.substring(12));
+                    } else if (part.startsWith("limit=")) {
+                        try {
+                            limit = Integer.parseInt(part.substring(6));
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
+
+            List<String> resultList = new ArrayList<>();
+            for (ChatEventItem item : eventHistory) {
+                if (unreadOnly && item.read) {
+                    continue;
+                }
+                resultList.add(formatEventJson(item));
+                item.read = true;
+                if (resultList.size() >= limit) {
+                    break;
+                }
+            }
+
+            String json = "{\"ok\": true, \"count\": " + resultList.size() + ", \"notifications\": [" + String.join(",", resultList) + "]}";
+            sendJsonResponse(exchange, 200, json);
+        }
+    }
+
+    private class NotificationsClearHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+
+            eventHistory.clear();
+            sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"Notifications cleared.\"}");
+        }
     }
 }

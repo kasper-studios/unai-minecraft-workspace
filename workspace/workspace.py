@@ -4,6 +4,13 @@ Subclasses Workspace from UnAI SDK. Interacts natively with Minecraft servers
 running the UnAI Bridge (Paper/Spigot plugin or Forge mod) via standard HTTP REST API.
 
 Follows ADR-0004 for one-shot connect tool state management.
+Provides tools for:
+- Connection and auth session
+- Console commands execution
+- In-game chat broadcast
+- In-game chat and event history inspection
+- Real-time notifications feed (chat, joins, deaths)
+- Server health and players inspection
 """
 
 import asyncio
@@ -75,7 +82,7 @@ class MinecraftWorkspace(Workspace):
         arguments={
             "host": {
                 "type": "string",
-                "description": "Server IP or domain (e.g. '127.0.0.1' or 'nodefrankfurt.kasperstudios.xyz' or '1.2.3.4:25585')",
+                "description": "Server IP or domain (e.g. 'nodefrankfurt.kasperstudios.xyz' or '127.0.0.1:25585')",
             },
             "api_key": {
                 "type": "string",
@@ -103,7 +110,12 @@ class MinecraftWorkspace(Workspace):
             except ValueError:
                 pass
 
-        base_url = f"http://{clean_host}:{target_port}"
+        # If connecting to plain port 80 or default HTTP, format accordingly
+        if target_port == 80:
+            base_url = f"http://{clean_host}"
+        else:
+            base_url = f"http://{clean_host}:{target_port}"
+
         status_url = f"{base_url}/api/status"
 
         headers = {
@@ -127,7 +139,7 @@ class MinecraftWorkspace(Workspace):
                         raise RuntimeError(f"Server returned error: {data.get('error', resp_text)}")
         except aiohttp.ClientConnectorError as e:
             raise RuntimeError(
-                f"Could not connect to Minecraft server at {base_url}. Ensure UnAI Bridge is running on port {target_port}. Error: {e}"
+                f"Could not connect to Minecraft server at {base_url}. Ensure UnAI Bridge is running. Error: {e}"
             )
 
         self._host = clean_host
@@ -149,17 +161,17 @@ class MinecraftWorkspace(Workspace):
         version = data.get("version", "unknown")
         platform = data.get("platform", "Minecraft")
         tps = data.get("tps", 20.0)
-        players = data.get("players_count", len(data.get("players", [])))
+        players = data.get("online_players", len(data.get("players", [])))
         max_players = data.get("max_players", 20)
 
         return (
-            f"Successfully connected to {platform} server ({version}) at {clean_host}:{target_port}!\n"
+            f"Successfully connected to {platform} server ({version}) at {clean_host}!\n"
             f"TPS: {tps} | Online: {players}/{max_players}"
         )
 
     @tool(
         "minecraft.disconnect",
-        description="Disconnect from the Minecraft server and clear session",
+        description="Disconnect from the Minecraft server and clear session credentials",
         arguments={},
         enabled_if=lambda ws: ws.is_connected,
     )
@@ -266,8 +278,87 @@ class MinecraftWorkspace(Workspace):
                 return f"Sent to Minecraft chat: [{sender}] {message}"
 
     @tool(
+        "minecraft.messages_history",
+        description="Retrieve recent in-game chat messages, joins, leaves, and death events from the server",
+        arguments={
+            "limit": {
+                "type": "integer",
+                "description": "Number of recent events to retrieve (default: 50)",
+                "default": 50,
+            }
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def messages_history(self, limit: int = 50, reason: Optional[str] = None) -> List[Dict[str, Any]]:
+        if not self._base_url or not self._api_key:
+            raise RuntimeError("Not connected to any Minecraft server. Call minecraft.connect first.")
+
+        url = f"{self._base_url}/api/chat/history?limit={limit}"
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as session:
+            async with session.get(url, headers=self._get_headers()) as resp:
+                if resp.status == 401 or resp.status == 403:
+                    raise RuntimeError("Session expired or invalid API key.")
+                if resp.status >= 400:
+                    raise RuntimeError(f"Failed to fetch chat history ({resp.status}): {await resp.text()}")
+                data = await resp.json()
+                return data.get("messages", [])
+
+    @tool(
+        "minecraft.notifications_feed",
+        description="Read cached real-time incoming Minecraft notifications (chat, player joins/leaves, deaths). Automatically marks items as read.",
+        arguments={
+            "unread_only": {
+                "type": "boolean",
+                "description": "Filter to return only unread notifications (default: true)",
+                "default": True,
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max notifications to return (default: 20)",
+                "default": 20,
+            },
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def notifications_feed(
+        self, unread_only: bool = True, limit: int = 20, reason: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        if not self._base_url or not self._api_key:
+            raise RuntimeError("Not connected to any Minecraft server. Call minecraft.connect first.")
+
+        url = f"{self._base_url}/api/notifications/feed?unread_only={str(unread_only).lower()}&limit={limit}"
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as session:
+            async with session.get(url, headers=self._get_headers()) as resp:
+                if resp.status == 401 or resp.status == 403:
+                    raise RuntimeError("Session expired or invalid API key.")
+                if resp.status >= 400:
+                    raise RuntimeError(f"Failed to fetch notifications feed ({resp.status}): {await resp.text()}")
+                data = await resp.json()
+                return data.get("notifications", [])
+
+    @tool(
+        "minecraft.notifications_clear",
+        description="Clear cached notifications list on the Minecraft server",
+        arguments={},
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def notifications_clear(self, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key:
+            raise RuntimeError("Not connected to any Minecraft server. Call minecraft.connect first.")
+
+        url = f"{self._base_url}/api/notifications/clear"
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as session:
+            async with session.get(url, headers=self._get_headers()) as resp:
+                if resp.status == 401 or resp.status == 403:
+                    raise RuntimeError("Session expired or invalid API key.")
+                if resp.status >= 400:
+                    raise RuntimeError(f"Failed to clear notifications ({resp.status}): {await resp.text()}")
+                data = await resp.json()
+                return data.get("message", "Minecraft notifications cleared.")
+
+    @tool(
         "minecraft.players",
-        description="List online players with their details (dimension, coordinates, ping)",
+        description="List online players with their details (dimension, coordinates, ping, health)",
         arguments={},
         enabled_if=lambda ws: ws.is_connected,
     )

@@ -9,16 +9,20 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.damagesource.CombatTracker;
 import net.minecraft.world.phys.Vec2;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.ServerChatEvent;
+import net.minecraftforge.event.entity.living.LivingDeathEvent;
+import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.server.ServerStartedEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.loading.FMLPaths;
 import org.slf4j.Logger;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -29,6 +33,7 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Mod(ForgeBridgeMod.MOD_ID)
 public class ForgeBridgeMod {
@@ -41,13 +46,71 @@ public class ForgeBridgeMod {
     private String apiKey;
     private int port = 25585;
 
-    public ForgeBridgeMod() {
-        MinecraftForge.EVENT_BUS.addListener(this::onServerStarted);
-        MinecraftForge.EVENT_BUS.addListener(this::onServerStopping);
-        LOGGER.info("[UnAI-Bridge] Forge 1.21.1 Bridge mod loaded.");
+    public static class ChatEventItem {
+        public final long id;
+        public final long timestamp;
+        public final String type;
+        public final String sender;
+        public final String message;
+        public volatile boolean read;
+
+        public ChatEventItem(long id, long timestamp, String type, String sender, String message) {
+            this.id = id;
+            this.timestamp = timestamp;
+            this.type = type;
+            this.sender = sender;
+            this.message = message;
+            this.read = false;
+        }
     }
 
-    private void onServerStarted(ServerStartedEvent event) {
+    private final List<ChatEventItem> eventHistory = new CopyOnWriteArrayList<>();
+    private final AtomicLong eventIdCounter = new AtomicLong(1);
+
+    public ForgeBridgeMod() {
+        MinecraftForge.EVENT_BUS.register(this);
+        LOGGER.info("[UnAI-Bridge] Forge 1.21.1 Bridge mod registered.");
+    }
+
+    public void addEvent(String type, String sender, String message) {
+        long id = eventIdCounter.getAndIncrement();
+        long now = System.currentTimeMillis();
+        eventHistory.add(new ChatEventItem(id, now, type, sender, message));
+        while (eventHistory.size() > 500) {
+            eventHistory.remove(0);
+        }
+    }
+
+    @SubscribeEvent
+    public void onServerChat(ServerChatEvent event) {
+        String sender = event.getPlayer().getName().getString();
+        String message = event.getRawText();
+        addEvent("chat", sender, message);
+    }
+
+    @SubscribeEvent
+    public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        String name = event.getEntity().getName().getString();
+        addEvent("join", name, name + " joined the game");
+    }
+
+    @SubscribeEvent
+    public void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
+        String name = event.getEntity().getName().getString();
+        addEvent("leave", name, name + " left the game");
+    }
+
+    @SubscribeEvent
+    public void onLivingDeath(LivingDeathEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            CombatTracker tracker = player.getCombatTracker();
+            String deathMsg = tracker.getDeathMessage().getString();
+            addEvent("death", player.getName().getString(), deathMsg);
+        }
+    }
+
+    @SubscribeEvent
+    public void onServerStarted(ServerStartedEvent event) {
         this.server = event.getServer();
         loadConfig();
         this.httpExecutor = Executors.newCachedThreadPool();
@@ -64,7 +127,8 @@ public class ForgeBridgeMod {
         }
     }
 
-    private void onServerStopping(ServerStoppingEvent event) {
+    @SubscribeEvent
+    public void onServerStopping(ServerStoppingEvent event) {
         if (httpServer != null) {
             httpServer.stop(0);
             httpServer = null;
@@ -122,6 +186,9 @@ public class ForgeBridgeMod {
         httpServer.createContext("/api/command", new CommandHandler());
         httpServer.createContext("/api/chat", new ChatHandler());
         httpServer.createContext("/api/players", new PlayersHandler());
+        httpServer.createContext("/api/chat/history", new ChatHistoryHandler());
+        httpServer.createContext("/api/notifications/feed", new NotificationsFeedHandler());
+        httpServer.createContext("/api/notifications/clear", new NotificationsClearHandler());
 
         httpServer.start();
     }
@@ -193,6 +260,17 @@ public class ForgeBridgeMod {
             return m.group(2);
         }
         return null;
+    }
+
+    private String formatEventJson(ChatEventItem item) {
+        return "{"
+                + "\"id\": " + item.id + ","
+                + "\"timestamp\": " + item.timestamp + ","
+                + "\"type\": \"" + escapeJson(item.type) + "\","
+                + "\"sender\": \"" + escapeJson(item.sender) + "\","
+                + "\"message\": \"" + escapeJson(item.message) + "\","
+                + "\"read\": " + item.read
+                + "}";
     }
 
     // ====================================================================
@@ -364,10 +442,14 @@ public class ForgeBridgeMod {
             }
 
             final String formatted = "§b[" + sender + "] §f" + message;
+            final String finalSender = sender;
+            final String finalMsg = message;
+
             server.execute(() -> {
                 if (server.getPlayerList() != null) {
                     server.getPlayerList().broadcastSystemMessage(Component.literal(formatted), false);
                 }
+                addEvent("chat_out", finalSender, finalMsg);
             });
 
             sendJsonResponse(exchange, 200, "{\"ok\": true}");
@@ -406,6 +488,84 @@ public class ForgeBridgeMod {
                     + "}";
 
             sendJsonResponse(exchange, 200, json);
+        }
+    }
+
+    private class ChatHistoryHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+
+            int limit = 50;
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null && query.contains("limit=")) {
+                try {
+                    for (String part : query.split("&")) {
+                        if (part.startsWith("limit=")) {
+                            limit = Integer.parseInt(part.substring(6));
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            List<String> items = new ArrayList<>();
+            int size = eventHistory.size();
+            int start = Math.max(0, size - limit);
+
+            for (int i = start; i < size; i++) {
+                items.add(formatEventJson(eventHistory.get(i)));
+            }
+
+            String json = "{\"ok\": true, \"count\": " + items.size() + ", \"messages\": [" + String.join(",", items) + "]}";
+            sendJsonResponse(exchange, 200, json);
+        }
+    }
+
+    private class NotificationsFeedHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+
+            boolean unreadOnly = true;
+            int limit = 20;
+
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null) {
+                for (String part : query.split("&")) {
+                    if (part.startsWith("unread_only=")) {
+                        unreadOnly = Boolean.parseBoolean(part.substring(12));
+                    } else if (part.startsWith("limit=")) {
+                        try {
+                            limit = Integer.parseInt(part.substring(6));
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
+
+            List<String> resultList = new ArrayList<>();
+            for (ChatEventItem item : eventHistory) {
+                if (unreadOnly && item.read) {
+                    continue;
+                }
+                resultList.add(formatEventJson(item));
+                item.read = true;
+                if (resultList.size() >= limit) {
+                    break;
+                }
+            }
+
+            String json = "{\"ok\": true, \"count\": " + resultList.size() + ", \"notifications\": [" + String.join(",", resultList) + "]}";
+            sendJsonResponse(exchange, 200, json);
+        }
+    }
+
+    private class NotificationsClearHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+
+            eventHistory.clear();
+            sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"Notifications cleared.\"}");
         }
     }
 }
