@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unai-minecraft-workspace"
+version = "1.0.0"
+description = "Native Minecraft Server Workspace for autonomous AI agents"
+readme = "README.md"
+authors = [{ name = "kasper-studios", email = "dimakukic1@gmail.com" }]
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.8.0",
+]

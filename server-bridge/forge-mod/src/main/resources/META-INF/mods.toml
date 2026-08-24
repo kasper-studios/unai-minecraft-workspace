@@ -1,0 +1,24 @@
+modLoader="javafml"
+loaderVersion="[52,)"
+license="MIT"
+
+[[mods]]
+modId="unai_bridge"
+version="1.0.0"
+displayName="UnAI Bridge"
+authors="kasper-studios"
+description='''Native UnAI Minecraft Server Bridge for Forge 1.21.1'''
+
+[[dependencies.unai_bridge]]
+modId="forge"
+mandatory=true
+versionRange="[52.0.1,)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.unai_bridge]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.21.1,1.22)"
+ordering="NONE"
+side="BOTH"
