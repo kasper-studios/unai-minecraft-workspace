@@ -232,9 +232,10 @@ class MinecraftWorkspace(Workspace):
 
         url = f"{self._base_url}/api/command"
         payload = {"command": clean_cmd}
+        body_data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
-            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+            async with session.post(url, headers=self._get_headers(), data=body_data) as resp:
                 if resp.status == 401 or resp.status == 403:
                     raise RuntimeError("Session expired or invalid API key.")
                 if resp.status >= 400:
@@ -265,9 +266,10 @@ class MinecraftWorkspace(Workspace):
 
         url = f"{self._base_url}/api/chat"
         payload = {"message": message, "sender": sender}
+        body_data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as session:
-            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+            async with session.post(url, headers=self._get_headers(), data=body_data) as resp:
                 if resp.status == 401 or resp.status == 403:
                     raise RuntimeError("Session expired or invalid API key.")
                 if resp.status >= 400:

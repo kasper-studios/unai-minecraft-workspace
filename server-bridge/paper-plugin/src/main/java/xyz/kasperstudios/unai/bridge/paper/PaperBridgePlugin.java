@@ -201,12 +201,63 @@ public class PaperBridgePlugin extends JavaPlugin implements Listener {
                 .replace("\t", "\\t");
     }
 
+    private String unescapeJsonString(String s) {
+        if (s == null) return null;
+        StringBuilder sb = new StringBuilder(s.length());
+        int i = 0;
+        int len = s.length();
+        while (i < len) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < len) {
+                char next = s.charAt(i + 1);
+                switch (next) {
+                    case '"': sb.append('"'); i += 2; break;
+                    case '\\': sb.append('\\'); i += 2; break;
+                    case '/': sb.append('/'); i += 2; break;
+                    case 'b': sb.append('\b'); i += 2; break;
+                    case 'f': sb.append('\f'); i += 2; break;
+                    case 'n': sb.append('\n'); i += 2; break;
+                    case 'r': sb.append('\r'); i += 2; break;
+                    case 't': sb.append('\t'); i += 2; break;
+                    case 'u':
+                        if (i + 5 < len) {
+                            String hex = s.substring(i + 2, i + 6);
+                            try {
+                                int code = Integer.parseInt(hex, 16);
+                                sb.append((char) code);
+                                i += 6;
+                            } catch (NumberFormatException e) {
+                                sb.append(c);
+                                i++;
+                            }
+                        } else {
+                            sb.append(c);
+                            i++;
+                        }
+                        break;
+                    default:
+                        sb.append(c);
+                        i++;
+                        break;
+                }
+            } else {
+                sb.append(c);
+                i++;
+            }
+        }
+        return sb.toString();
+    }
+
     private String extractJsonField(String json, String field) {
         if (json == null) return null;
-        String pattern = "\"" + field + "\"\\s*:\\s*\"([^\"]*)\"";
+        String pattern = "\"" + field + "\"\\s*:\\s*(?:\"((?:[^\"\\\\]|\\\\.)*)\"|([0-9]+))";
         java.util.regex.Matcher m = java.util.regex.Pattern.compile(pattern).matcher(json);
         if (m.find()) {
-            return m.group(1).replace("\\\"", "\"").replace("\\\\", "\\").replace("\\n", "\n");
+            String strVal = m.group(1);
+            if (strVal != null) {
+                return unescapeJsonString(strVal);
+            }
+            return m.group(2);
         }
         return null;
     }
