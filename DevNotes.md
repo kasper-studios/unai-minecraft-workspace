@@ -20,10 +20,10 @@ Write only what is useful for implementation, review, maintenance, and AI execut
 Native Minecraft Server Workspace and bridge ecosystem for the UnAI runtime. Allows autonomous AI agents to interact with running Minecraft servers (Paper/Spigot and Forge) via standard MCP tools.
 
 ### Core goal
-Enable AI agents to execute console commands, send in-game chat messages, inspect server status/metrics, and observe player activity through a unified HTTP/REST bridge.
+Enable AI agents to execute console commands, broadcast chat messages, inspect real-time server health (TPS, memory, uptime), observe player activity, and receive in-game chat notifications/events.
 
 ### Success criteria
-- Functional UnAI Python workspace registering `@tool` methods (`minecraft.connect`, `minecraft.command`, `minecraft.chat`, `minecraft.status`, `minecraft.players`, `minecraft.disconnect`).
+- Functional UnAI Python workspace registering `@tool` methods (`minecraft.connect`, `minecraft.command`, `minecraft.chat`, `minecraft.status`, `minecraft.players`, `minecraft.messages_history`, `minecraft.notifications_feed`, `minecraft.notifications_clear`, `minecraft.disconnect`).
 - Multi-platform server bridges (Paper plugin + Forge 1.21.1 mod) with identical REST API.
 - Zero external runtime dependencies on server side (pure Java `com.sun.net.httpserver.HttpServer`).
 - Secure auto-generated API key on first startup with console notice.
@@ -39,23 +39,19 @@ Enable AI agents to execute console commands, send in-game chat messages, inspec
 ## 2. Current Status
 
 ### Status summary
-Active development (v1.0.0 MVP).
+Completed & Deployed v1.0.0 (Live on `nodefrankfurt.kasperstudios.xyz`).
 
 ### Implemented
 - [x] Architecture & protocol design
 - [x] Python Workspace SDK implementation (`workspace/workspace.py`, `workspace/manifest.toml`, `workspace/run.py`)
-- [x] Forge 1.21.1 server bridge mod (`unai_bridge`)
-- [x] Paper/Spigot server bridge plugin (`UnAIBridge`)
-
-### In progress
-- [ ] Local build and testing of jars
-- [ ] GitHub repository publishing and release creation
-- [ ] Deployment to Frankfurt server (`nodefrankfurt.kasperstudios.xyz`)
-- [ ] UnAI marketplace registration (`wsmarketplace/index.json`)
-
-### Planned / TODO
-- [ ] Real-time event streaming via WebSocket / Event Bus (chat feed, player joins/deaths)
-- [ ] Player inventory and block coordinate queries
+- [x] Forge 1.21.1 server bridge mod (`unai_bridge`) with chat & lifecycle events
+- [x] Paper/Spigot server bridge plugin (`UnAIBridge`) with chat & lifecycle events
+- [x] Local builds of both jars in `build-artifacts/`
+- [x] Published GitHub repository (`kasper-studios/unai-minecraft-workspace`)
+- [x] GitHub Release `v1.0.0` with assets attached
+- [x] Deployed and active on Frankfurt server (`nodefrankfurt.kasperstudios.xyz`)
+- [x] Indexed in UnAI marketplace (`main/wsmarketplace/index.json`)
+- [x] Installed and verified via `unai workspace install minecraft` and live test suite
 
 ---
 
@@ -65,8 +61,8 @@ Active development (v1.0.0 MVP).
 - Runtime: Python 3.11 (UnAI SDK) / Java 21 (Minecraft Server)
 - Language(s): Python / Java
 - Platform(s): Forge 1.21.1 / Paper & Spigot
-- HTTP Server: Built-in JDK `com.sun.net.httpserver.HttpServer` (zero shading, zero conflicts)
-- Build tools: Gradle 8.10+ / standard javac
+- HTTP Server: Built-in JDK `com.sun.net.httpserver.HttpServer`
+- Build tools: Gradle 8.10+
 
 ### Versions
 - Minecraft: 1.21.1
@@ -83,44 +79,15 @@ Active development (v1.0.0 MVP).
   ├── minecraft.connect                                       ├── /api/status
   ├── minecraft.command                                       ├── /api/command
   ├── minecraft.chat                                          ├── /api/chat
-  └── minecraft.status                                        └── /api/players
+  ├── minecraft.messages_history                              ├── /api/chat/history
+  ├── minecraft.notifications_feed                            ├── /api/notifications/feed
+  ├── minecraft.notifications_clear                           ├── /api/notifications/clear
+  └── minecraft.status / players                              └── /api/players
 ```
 
 ### Security & Auth (ADR-0004)
-- Server creates `config/unai-bridge.json` (or `plugins/UnAIBridge/config.yml`) with a secure random token `unai_mc_<hex>`.
+- Server creates `config/unai-bridge.json` (or `plugins/UnAIBridge/config.yml`) with random token `unai_mc_<hex>`.
 - Prints token to server console on launch.
 - Workspace stores connection in `~/.unai/data/minecraft/session.json`.
 - `minecraft.connect` tool vanishes once connected (`enabled_if=lambda ws: not ws.is_connected`).
 - Session reset via `unai workspace reset-session minecraft`.
-
----
-
-## 5. Project Structure
-
-```txt
-unai-minecraft-workspace/
-├── DevNotes.md
-├── README.md
-├── pyproject.toml
-├── .gitignore
-├── workspace/
-│   ├── manifest.toml
-│   ├── run.py
-│   ├── workspace.py
-│   └── requirements.txt
-└── server-bridge/
-    ├── paper-plugin/
-    │   ├── build.gradle
-    │   └── src/main/java/xyz/kasperstudios/unai/bridge/paper/
-    └── forge-mod/
-        ├── build.gradle
-        ├── gradle.properties
-        └── src/main/java/xyz/kasperstudios/unai/bridge/forge/
-```
-
----
-
-## 6. Critical Rules
-1. Never hardcode API keys or credentials into repository files.
-2. HTTP server must not block the Minecraft main server tick thread; heavy operations run asynchronously, command dispatches execute on main thread.
-3. Keep server bridge dependencies minimal (rely on standard Java libraries).
