@@ -34,6 +34,24 @@ def _get_hud_config_file() -> Path:
     return _get_data_dir() / "hud_config.json"
 
 
+def _get_locations_file() -> Path:
+    return _get_data_dir() / "locations.json"
+
+
+def _read_locations() -> Dict[str, Any]:
+    lf = _get_locations_file()
+    if lf.exists():
+        try:
+            return json.loads(lf.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _write_locations(locs: Dict[str, Any]) -> None:
+    _get_locations_file().write_text(json.dumps(locs, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 class MinecraftWorkspace(Workspace):
     """Native Minecraft Server Workspace for autonomous AI agents."""
 
@@ -510,6 +528,165 @@ class MinecraftWorkspace(Workspace):
             self._hud_modules = list(modules)
         _get_hud_config_file().write_text(json.dumps({"enabled": self._hud_enabled, "modules": self._hud_modules}, indent=2))
         return f"HUD configured: enabled={self._hud_enabled}, modules={self._hud_modules}"
+
+    # ====================================================================
+    # Persistent Spatial Memory Layer (minecraft.locations)
+    # ====================================================================
+
+    @tool(
+        "minecraft.locations.set",
+        description="Save or update a named persistent spatial waypoint (home, mine, village, portal, etc.). If coordinates are omitted, saves current bot location.",
+        arguments={
+            "name": {"type": "string", "description": "Waypoint name (e.g. 'home', 'mine', 'nether_portal', 'kasper_base')"},
+            "x": {"type": "number", "description": "Optional X coordinate (defaults to current bot X)"},
+            "y": {"type": "number", "description": "Optional Y coordinate (defaults to current bot Y)"},
+            "z": {"type": "number", "description": "Optional Z coordinate (defaults to current bot Z)"},
+            "dimension": {"type": "string", "description": "Dimension identifier (default: 'minecraft:overworld')", "default": "minecraft:overworld"},
+            "description": {"type": "string", "description": "Optional description of what is at this location"},
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional categorization tags (e.g. ['base', 'resources', 'portal'])"
+            }
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def locations_set(
+        self, name: str, x: Optional[float] = None, y: Optional[float] = None, z: Optional[float] = None,
+        dimension: str = "minecraft:overworld", description: str = "", tags: Optional[List[str]] = None,
+        reason: Optional[str] = None
+    ) -> str:
+        clean_name = name.strip().lower().replace(" ", "_")
+        if not clean_name:
+            raise RuntimeError("Location name cannot be empty")
+
+        final_x, final_y, final_z = x, y, z
+        if final_x is None or final_y is None or final_z is None:
+            # Query current bot position
+            bot_st = await self.bot_status()
+            if not bot_st.get("spawned"):
+                raise RuntimeError("Bot is not spawned. Please specify explicit x, y, z coordinates.")
+            final_x = bot_st.get("x", 0.0)
+            final_y = bot_st.get("y", 64.0)
+            final_z = bot_st.get("z", 0.0)
+
+        locs = _read_locations()
+        locs[clean_name] = {
+            "name": clean_name,
+            "x": round(float(final_x), 2),
+            "y": round(float(final_y), 2),
+            "z": round(float(final_z), 2),
+            "dimension": dimension,
+            "description": description,
+            "tags": tags or [],
+            "updated_at": time.time()
+        }
+        _write_locations(locs)
+
+        res = f"Saved location '{clean_name}' at ({final_x:.1f}, {final_y:.1f}, {final_z:.1f}) in {dimension}"
+        return await self._append_hud_if_enabled(res)
+
+    @tool(
+        "minecraft.locations.get",
+        description="Retrieve a saved spatial waypoint by name with coordinates and distance from bot",
+        arguments={
+            "name": {"type": "string", "description": "Waypoint name (e.g. 'home', 'mine')"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def locations_get(self, name: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        clean_name = name.strip().lower().replace(" ", "_")
+        locs = _read_locations()
+        if clean_name not in locs:
+            raise RuntimeError(f"Location '{clean_name}' not found in persistent memory")
+
+        item = dict(locs[clean_name])
+        try:
+            bot_st = await self.bot_status()
+            if bot_st.get("spawned"):
+                bx, by, bz = bot_st.get("x", 0.0), bot_st.get("y", 0.0), bot_st.get("z", 0.0)
+                dx = item["x"] - bx
+                dy = item["y"] - by
+                dz = item["z"] - bz
+                item["distance_from_bot"] = round((dx*dx + dy*dy + dz*dz)**0.5, 2)
+        except Exception:
+            pass
+
+        return await self._append_hud_if_enabled(item)
+
+    @tool(
+        "minecraft.locations.list",
+        description="List all persistent spatial waypoints with coordinates and tags",
+        arguments={
+            "tag": {"type": "string", "description": "Optional tag filter (e.g. 'base', 'portal')"},
+            "dimension": {"type": "string", "description": "Optional dimension filter"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def locations_list(self, tag: str = "", dimension: str = "", reason: Optional[str] = None) -> List[Dict[str, Any]]:
+        locs = _read_locations()
+        result = []
+
+        bot_pos = None
+        try:
+            bot_st = await self.bot_status()
+            if bot_st.get("spawned"):
+                bot_pos = (bot_st.get("x", 0.0), bot_st.get("y", 0.0), bot_st.get("z", 0.0))
+        except Exception:
+            pass
+
+        for k, v in locs.items():
+            if tag and tag not in v.get("tags", []):
+                continue
+            if dimension and v.get("dimension") != dimension:
+                continue
+            item = dict(v)
+            if bot_pos:
+                dx = item["x"] - bot_pos[0]
+                dy = item["y"] - bot_pos[1]
+                dz = item["z"] - bot_pos[2]
+                item["distance_from_bot"] = round((dx*dx + dy*dy + dz*dz)**0.5, 2)
+            result.append(item)
+
+        result.sort(key=lambda x: x.get("distance_from_bot", 999999))
+        return result
+
+    @tool(
+        "minecraft.locations.remove",
+        description="Delete a saved spatial waypoint from persistent memory",
+        arguments={
+            "name": {"type": "string", "description": "Waypoint name to remove"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def locations_remove(self, name: str, reason: Optional[str] = None) -> str:
+        clean_name = name.strip().lower().replace(" ", "_")
+        locs = _read_locations()
+        if clean_name not in locs:
+            raise RuntimeError(f"Location '{clean_name}' does not exist")
+        del locs[clean_name]
+        _write_locations(locs)
+        return f"Removed location '{clean_name}' from persistent memory."
+
+    @tool(
+        "minecraft.locations.goto",
+        description="Navigate bot directly to a named saved waypoint (e.g. 'goto home') using 3D A* Pathfinding",
+        arguments={
+            "name": {"type": "string", "description": "Waypoint name to travel to"},
+            "radius": {"type": "number", "description": "Target radius in blocks (default: 1.2)", "default": 1.2}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def locations_goto(self, name: str, radius: float = 1.2, reason: Optional[str] = None) -> str:
+        clean_name = name.strip().lower().replace(" ", "_")
+        locs = _read_locations()
+        if clean_name not in locs:
+            raise RuntimeError(f"Location '{clean_name}' not found. Use locations.list to see available waypoints.")
+
+        target = locs[clean_name]
+        tx, ty, tz = target["x"], target["y"], target["z"]
+        nav_msg = await self.bot_navigate(x=tx, y=ty, z=tz, radius=radius)
+        return f"Traveling to '{clean_name}' ({tx}, {ty}, {tz}): {nav_msg}"
 
     # ====================================================================
     # Server Operations Tools
