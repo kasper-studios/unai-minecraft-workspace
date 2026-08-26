@@ -114,6 +114,14 @@ public class FakePlayerManager {
 
         server.execute(() -> {
             try {
+                if (bot != null) {
+                    removeFromPlayerList(server.getPlayerList(), bot);
+                    bot.discard();
+                    try {
+                        fLevel.removePlayerImmediately(bot, net.minecraft.world.entity.Entity.RemovalReason.DISCARDED);
+                    } catch (Throwable ignored) {}
+                }
+
                 DummyConnection dummyConnection = new DummyConnection();
                 bot = new ServerPlayer(server, fLevel, fProfile,
                         net.minecraft.server.level.ClientInformation.createDefault()) {
@@ -128,15 +136,21 @@ public class FakePlayerManager {
                     @Override
                     public boolean isAttackable() { return true; }
                     @Override
+                    public void knockback(double strength, double x, double z) {
+                        super.knockback(strength, x, z);
+                        this.hurtMarked = true;
+                        this.hasImpulse = true;
+                        server.getPlayerList().broadcastAll(new ClientboundSetEntityMotionPacket(this));
+                    }
+                    @Override
                     public boolean hurt(DamageSource src, float amount) {
                         boolean res = super.hurt(src, amount);
-                        // Red damage flash animation to all clients
                         server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(this, 1));
                         if (src.getEntity() != null) {
                             double dx = this.getX() - src.getEntity().getX();
                             double dz = this.getZ() - src.getEntity().getZ();
                             double dist = Math.max(0.1, Math.sqrt(dx * dx + dz * dz));
-                            this.setDeltaMovement(dx / dist * 0.40, 0.32, dz / dist * 0.40);
+                            this.setDeltaMovement(dx / dist * 0.55, 0.40, dz / dist * 0.55);
                             this.hurtMarked = true;
                             this.hasImpulse = true;
                             server.getPlayerList().broadcastAll(new ClientboundSetEntityMotionPacket(this));
