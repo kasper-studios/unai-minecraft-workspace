@@ -417,6 +417,95 @@ class MinecraftWorkspace(Workspace):
                 return await self._append_hud_if_enabled(f"Bot dropped item (slot: {slot}, count: {count})")
 
     @tool(
+        "minecraft.bot.select_slot",
+        description="Select active hotbar slot index (0-8) to hold that item in mainhand",
+        arguments={
+            "slot": {"type": "integer", "description": "Hotbar slot index (0-8)"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_select_slot(self, slot: int, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/select_slot"
+        payload = {"slot": str(slot)}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "select slot failed"))
+                return await self._append_hud_if_enabled(f"Bot selected hotbar slot {slot}")
+
+    @tool(
+        "minecraft.bot.swap_slots",
+        description="Move or swap items between any two inventory/armor/offhand slots",
+        arguments={
+            "from_slot": {"type": "integer", "description": "Source slot index (0-35 inventory, 36-39 armor, 40 offhand)"},
+            "to_slot": {"type": "integer", "description": "Destination slot index"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_swap_slots(self, from_slot: int, to_slot: int, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/swap_slots"
+        payload = {"from_slot": str(from_slot), "to_slot": str(to_slot)}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "swap slots failed"))
+                return await self._append_hud_if_enabled(f"Bot swapped slot {from_slot} with slot {to_slot}")
+
+    @tool(
+        "minecraft.bot.use_item",
+        description="Use or consume the currently held item (eat food, drink potion, shoot bow, interact)",
+        arguments={
+            "hand": {"type": "string", "description": "Hand to use: 'mainhand' or 'offhand'", "default": "mainhand"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_use_item(self, hand: str = "mainhand", reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/use_item"
+        payload = {"hand": hand}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "use item failed"))
+                return await self._append_hud_if_enabled(f"Bot used item in {hand}")
+
+    @tool(
+        "minecraft.bot.clear_inventory",
+        description="Clear all items from bot inventory and armor slots",
+        arguments={},
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_clear_inventory(self, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/clear_inventory"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers()) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "clear inventory failed"))
+                return await self._append_hud_if_enabled("Bot inventory cleared.")
+
+    @tool(
+        "minecraft.bot.craft",
+        description="Craft an item recipe using ingredients currently in the bot's inventory",
+        arguments={
+            "recipe": {"type": "string", "description": "Recipe ID or target item ID, e.g. 'minecraft:oak_planks', 'minecraft:crafting_table', 'minecraft:stick'"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_craft(self, recipe: str, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/craft"
+        payload = {"recipe": recipe}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "craft failed"))
+                msg = data.get("message", "Crafted")
+                return await self._append_hud_if_enabled(f"Bot crafting result: {msg}")
+
+    @tool(
         "minecraft.bot.look_at",
         description="Rotate the bot's head to look at coordinates or set explicit yaw/pitch angles",
         arguments={

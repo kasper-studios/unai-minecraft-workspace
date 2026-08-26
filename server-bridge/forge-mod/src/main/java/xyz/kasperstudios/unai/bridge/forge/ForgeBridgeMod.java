@@ -211,6 +211,11 @@ public class ForgeBridgeMod {
         httpServer.createContext("/api/bot/equip", new BotEquipHandler());
         httpServer.createContext("/api/bot/inventory", new BotInventoryHandler());
         httpServer.createContext("/api/bot/drop", new BotDropHandler());
+        httpServer.createContext("/api/bot/select_slot", new BotSelectSlotHandler());
+        httpServer.createContext("/api/bot/swap_slots", new BotSwapSlotsHandler());
+        httpServer.createContext("/api/bot/use_item", new BotUseItemHandler());
+        httpServer.createContext("/api/bot/clear_inventory", new BotClearInventoryHandler());
+        httpServer.createContext("/api/bot/craft", new BotCraftHandler());
         httpServer.createContext("/api/bot/navigate", new BotNavigateHandler());
         httpServer.createContext("/api/bot/nav_status", new BotNavStatusHandler());
         httpServer.createContext("/api/bot/stop_move", new BotStopMoveHandler());
@@ -742,6 +747,68 @@ public class ForgeBridgeMod {
             String res = FakePlayerManager.getInstance().dropItem(slot, count);
             if (!"ok".equals(res)) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + res + "\"}");
             else sendJsonResponse(exchange, 200, "{\"ok\": true}");
+        }
+    }
+
+    private class BotSelectSlotHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String body = readBody(exchange);
+            int slot = 0;
+            try { slot = Integer.parseInt(extractJsonField(body, "slot")); } catch (Exception ignored) {}
+            String res = FakePlayerManager.getInstance().selectSlot(slot);
+            if (!"ok".equals(res)) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + res + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true}");
+        }
+    }
+
+    private class BotSwapSlotsHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String body = readBody(exchange);
+            int fromSlot = 0;
+            int toSlot = 0;
+            try { fromSlot = Integer.parseInt(extractJsonField(body, "from_slot")); } catch (Exception ignored) {}
+            try { toSlot = Integer.parseInt(extractJsonField(body, "to_slot")); } catch (Exception ignored) {}
+            String res = FakePlayerManager.getInstance().swapSlots(fromSlot, toSlot);
+            if (!"ok".equals(res)) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + res + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true}");
+        }
+    }
+
+    private class BotUseItemHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String body = readBody(exchange);
+            String hand = extractJsonField(body, "hand");
+            String res = FakePlayerManager.getInstance().useItem(hand);
+            if (!"ok".equals(res)) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + res + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true}");
+        }
+    }
+
+    private class BotClearInventoryHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String res = FakePlayerManager.getInstance().clearInventory();
+            if (!"ok".equals(res)) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + res + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true}");
+        }
+    }
+
+    private class BotCraftHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String body = readBody(exchange);
+            String recipe = extractJsonField(body, "recipe");
+            String res = FakePlayerManager.getInstance().craft(recipe);
+            if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
         }
     }
 

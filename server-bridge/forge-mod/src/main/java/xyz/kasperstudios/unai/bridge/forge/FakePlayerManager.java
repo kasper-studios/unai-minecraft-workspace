@@ -504,6 +504,125 @@ public class FakePlayerManager {
         return "ok";
     }
 
+    public synchronized String selectSlot(int slot) {
+        if (!isSpawned()) return "error: bot not spawned";
+        if (slot < 0 || slot > 8) return "error: slot must be 0-8";
+        server.execute(() -> {
+            bot.getInventory().selected = slot;
+            List<com.mojang.datafixers.util.Pair<EquipmentSlot, ItemStack>> list = new ArrayList<>();
+            list.add(com.mojang.datafixers.util.Pair.of(EquipmentSlot.MAINHAND, bot.getMainHandItem()));
+            server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket(bot.getId(), list));
+        });
+        return "ok";
+    }
+
+    public synchronized String swapSlots(int fromSlot, int toSlot) {
+        if (!isSpawned()) return "error: bot not spawned";
+        int size = bot.getInventory().getContainerSize();
+        if (fromSlot < 0 || fromSlot >= size || toSlot < 0 || toSlot >= size) {
+            return "error: invalid slot index (0-" + (size - 1) + ")";
+        }
+        server.execute(() -> {
+            ItemStack fromStack = bot.getInventory().getItem(fromSlot);
+            ItemStack toStack = bot.getInventory().getItem(toSlot);
+            bot.getInventory().setItem(fromSlot, toStack);
+            bot.getInventory().setItem(toSlot, fromStack);
+
+            List<com.mojang.datafixers.util.Pair<EquipmentSlot, ItemStack>> list = new ArrayList<>();
+            for (EquipmentSlot es : EquipmentSlot.values()) {
+                list.add(com.mojang.datafixers.util.Pair.of(es, bot.getItemBySlot(es)));
+            }
+            server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket(bot.getId(), list));
+        });
+        return "ok";
+    }
+
+    public synchronized String useItem(String handStr) {
+        if (!isSpawned()) return "error: bot not spawned";
+        InteractionHand hand = "offhand".equalsIgnoreCase(handStr) ? InteractionHand.OFF_HAND : InteractionHand.MAIN_HAND;
+        server.execute(() -> {
+            ItemStack st = bot.getItemInHand(hand);
+            if (!st.isEmpty()) {
+                bot.gameMode.useItem(bot, bot.serverLevel(), st, hand);
+                server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundAnimatePacket(bot, hand == InteractionHand.MAIN_HAND ? 0 : 3));
+            }
+        });
+        return "ok";
+    }
+
+    public synchronized String clearInventory() {
+        if (!isSpawned()) return "error: bot not spawned";
+        server.execute(() -> {
+            bot.getInventory().clearContent();
+            List<com.mojang.datafixers.util.Pair<EquipmentSlot, ItemStack>> list = new ArrayList<>();
+            for (EquipmentSlot es : EquipmentSlot.values()) {
+                list.add(com.mojang.datafixers.util.Pair.of(es, ItemStack.EMPTY));
+            }
+            server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket(bot.getId(), list));
+        });
+        return "ok";
+    }
+
+    public synchronized String craft(String recipeId) {
+        if (!isSpawned()) return "error: bot not spawned";
+        if (recipeId == null || recipeId.isBlank()) return "error: missing recipe or item id";
+        
+        var recipes = server.getRecipeManager().getRecipes();
+        net.minecraft.world.item.crafting.RecipeHolder<?> targetHolder = null;
+        for (var holder : recipes) {
+            String idStr = holder.id().toString();
+            var recipe = holder.value();
+            ItemStack resStack = recipe.getResultItem(server.registryAccess());
+            String resId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(resStack.getItem()).toString();
+            if (idStr.equals(recipeId) || idStr.endsWith("/" + recipeId) || resId.equals(recipeId)) {
+                targetHolder = holder;
+                break;
+            }
+        }
+        if (targetHolder == null) return "error: unknown recipe '" + recipeId + "'";
+        
+        var recipe = targetHolder.value();
+        ItemStack resultStack = recipe.getResultItem(server.registryAccess()).copy();
+        var ingredients = recipe.getIngredients();
+        
+        // Verify ingredients in bot inventory
+        boolean canCraft = true;
+        for (var ing : ingredients) {
+            if (ing.isEmpty()) continue;
+            boolean matched = false;
+            for (int i = 0; i < bot.getInventory().getContainerSize(); i++) {
+                ItemStack invStack = bot.getInventory().getItem(i);
+                if (!invStack.isEmpty() && ing.test(invStack)) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                canCraft = false;
+                break;
+            }
+        }
+        
+        if (!canCraft) return "error: missing required ingredients in bot inventory";
+        
+        // Consume ingredients
+        for (var ing : ingredients) {
+            if (ing.isEmpty()) continue;
+            for (int i = 0; i < bot.getInventory().getContainerSize(); i++) {
+                ItemStack invStack = bot.getInventory().getItem(i);
+                if (!invStack.isEmpty() && ing.test(invStack)) {
+                    invStack.shrink(1);
+                    break;
+                }
+            }
+        }
+        
+        // Add crafted result to bot inventory
+        bot.getInventory().add(resultStack);
+        
+        return "crafted: " + resultStack.getCount() + "x " + net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(resultStack.getItem());
+    }
+
     public synchronized String equip(String slot, String itemId) {
         if (!isSpawned()) return "error: bot not spawned";
         var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(
@@ -631,6 +750,31 @@ public class FakePlayerManager {
             }
             bot.setDeltaMovement(dm.x * 0.85, newY, dm.z * 0.85);
             bot.hurtMarked = true;
+        }
+
+        // Pick up dropped items nearby (1.8m radius)
+        if (bot.tickCount % 2 == 0) {
+            try {
+                List<net.minecraft.world.entity.item.ItemEntity> items = bot.serverLevel().getEntitiesOfClass(
+                        net.minecraft.world.entity.item.ItemEntity.class,
+                        bot.getBoundingBox().inflate(1.8, 1.0, 1.8),
+                        item -> !item.hasPickUpDelay() && item.isAlive()
+                );
+                for (net.minecraft.world.entity.item.ItemEntity item : items) {
+                    ItemStack st = item.getItem();
+                    int count = st.getCount();
+                    if (bot.getInventory().add(st)) {
+                        bot.take(item, count);
+                        bot.serverLevel().playSound(null, bot.getX(), bot.getY(), bot.getZ(),
+                                net.minecraft.sounds.SoundEvents.ITEM_PICKUP,
+                                net.minecraft.sounds.SoundSource.PLAYERS,
+                                0.2F, (float)((Math.random() - Math.random()) * 0.2 + 1.0));
+                        if (st.isEmpty()) {
+                            item.discard();
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
         }
 
         // A* Path execution
