@@ -77,6 +77,157 @@ class MinecraftWorkspace(Workspace):
     # ====================================================================
 
     @tool(
+        "minecraft.bot.spawn",
+        description="Spawn the virtual bot player into the world",
+        arguments={
+            "name": {"type": "string", "description": "Optional bot name (default: DiromPrime)"},
+            "x": {"type": "number", "description": "Optional spawn X coord"},
+            "y": {"type": "number", "description": "Optional spawn Y coord"},
+            "z": {"type": "number", "description": "Optional spawn Z coord"},
+            "skin": {"type": "string", "description": "Optional skin spec (e.g. 'kasperenok', 'default')"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_spawn(
+        self, name: str = "", x: Optional[float] = None, y: Optional[float] = None, z: Optional[float] = None, skin: str = "", reason: Optional[str] = None
+    ) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/spawn"
+        payload = {"name": name, "skin": skin, "x": str(x) if x is not None else "", "y": str(y) if y is not None else "", "z": str(z) if z is not None else ""}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "spawn failed"))
+                return data.get("message", "Spawned")
+
+    @tool(
+        "minecraft.bot.despawn",
+        description="Remove the virtual bot player from the world",
+        arguments={},
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_despawn(self, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/despawn"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=self._get_headers()) as resp:
+                data = await resp.json()
+                return data.get("message", "Despawned")
+
+    @tool(
+        "minecraft.bot.status",
+        description="Get bot player status and location",
+        arguments={},
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_status(self, reason: Optional[str] = None) -> Dict[str, Any]:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/status"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=self._get_headers()) as resp:
+                data = await resp.json()
+                return data.get("status", {})
+
+    @tool(
+        "minecraft.bot.say",
+        description="Make the bot speak in chat",
+        arguments={
+            "message": {"type": "string", "description": "Message to send"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_say(self, message: str, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/say"
+        payload = {"message": message}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "say failed"))
+                return "Message sent as bot"
+
+    @tool(
+        "minecraft.bot.action",
+        description="Perform a bot action (jump, swing, sneak, spin)",
+        arguments={
+            "action": {"type": "string", "description": "Action type (e.g. 'sneak', 'swing', 'jump')"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_action(self, action: str, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/action"
+        payload = {"action": action}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "action failed"))
+                return f"Bot performed action: {action}"
+
+    @tool(
+        "minecraft.bot.look_at",
+        description="Turn the bot's head",
+        arguments={
+            "x": {"type": "number", "description": "Target X"},
+            "y": {"type": "number", "description": "Target Y"},
+            "z": {"type": "number", "description": "Target Z"},
+            "yaw": {"type": "number", "description": "Optional direct yaw angle"},
+            "pitch": {"type": "number", "description": "Optional direct pitch angle"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_look_at(
+        self, x: Optional[float] = None, y: Optional[float] = None, z: Optional[float] = None, yaw: Optional[float] = None, pitch: Optional[float] = None, reason: Optional[str] = None
+    ) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/look_at"
+        payload = {}
+        if x is not None: payload["x"] = str(x)
+        if y is not None: payload["y"] = str(y)
+        if z is not None: payload["z"] = str(z)
+        if yaw is not None: payload["yaw"] = str(yaw)
+        if pitch is not None: payload["pitch"] = str(pitch)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "look failed"))
+                return "Look updated"
+
+    @tool(
+        "minecraft.bot.move_to",
+        description="Move the bot linearly to coordinates (simple move; full A* coming soon)",
+        arguments={
+            "x": {"type": "number", "description": "Target X"},
+            "y": {"type": "number", "description": "Target Y"},
+            "z": {"type": "number", "description": "Target Z"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_move_to(self, x: float, y: float, z: float, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/move_to"
+        payload = {"x": str(x), "y": str(y), "z": str(z)}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "move failed"))
+                return "Moving"
+
+    @tool(
+        "minecraft.bot.stop_move",
+        description="Stop bot movement",
+        arguments={},
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_stop_move(self, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/stop_move"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=self._get_headers()) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "stop failed"))
+                return "Movement stopped"
+    @tool(
         "minecraft.connect",
         description="Connect to a Minecraft server running UnAI Bridge using server IP and API Key",
         arguments={
