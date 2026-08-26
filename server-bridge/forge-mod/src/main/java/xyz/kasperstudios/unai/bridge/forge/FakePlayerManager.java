@@ -3,6 +3,7 @@ package xyz.kasperstudios.unai.bridge.forge;
 import com.mojang.authlib.GameProfile;
 import com.mojang.authlib.properties.Property;
 import com.mojang.logging.LogUtils;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.Connection;
 import net.minecraft.network.PacketSendListener;
 import net.minecraft.network.chat.Component;
@@ -21,28 +22,36 @@ import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 
 import java.net.InetSocketAddress;
-import java.util.EnumSet;
-import java.util.UUID;
+import java.util.*;
 
 /**
- * FakePlayerManager - manages the virtual AI avatar "bot player".
- *
- * Uses a lightweight offline-mode ServerPlayer subclass. No ClientInformation
- * dependency (offline stub uses defaults).
+ * FakePlayerManager - manages the virtual AI avatar "bot player" in Forge 1.21.1.
+ * Features:
+ * - Offline-mode fake player entity with custom skin injection
+ * - 3D A* Pathfinding (KasHub engine) with jump and obstacle navigation
+ * - Perception Engine (3D ASCII View, 2D POV Radar, Crosshair Target, 60-Frame Ring Buffer)
  */
 public class FakePlayerManager {
 
     private static final Logger LOGGER = LogUtils.getLogger();
-
     public static final String DEFAULT_BOT_NAME = "DiromPrime";
 
     private MinecraftServer server;
     private ServerPlayer bot;
     private GameProfile profile;
 
-    // Movement state
-    private Vec3 moveTarget = null;
-    private double moveSpeed = 4.3; // blocks/~tick scale handled in tick()
+    // Movement & Pathfinding state
+    private volatile boolean isNavigating = false;
+    private volatile List<BlockPos> currentPath = null;
+    private volatile int pathIndex = 0;
+    private volatile BlockPos targetBlockPos = null;
+    private volatile float targetRadius = 1.2f;
+    private String navStatus = "IDLE";
+
+    private Vec3 lastPos = null;
+    private int stuckTicks = 0;
+    private static final int STUCK_THRESHOLD = 30; // 1.5 seconds
+
     private float targetYaw = Float.NaN;
     private float targetPitch = Float.NaN;
 
@@ -67,7 +76,6 @@ public class FakePlayerManager {
     }
 
     private static UUID offlineUuid(String name) {
-        // Mirror offline-mode UUID derivation used by vanilla
         return UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
@@ -77,17 +85,13 @@ public class FakePlayerManager {
         if (name.length() > 16) name = name.substring(0, 16);
 
         final String fName = name;
-        despawn(); // ensure single instance
+        despawn();
 
         profile = new GameProfile(offlineUuid(fName), fName);
-
-        // Apply skin: command "skin_spec" semantics:
-        //  - null/empty/"default": embedded default skin (resource-packed Bas64? fallback: name-based)
-        //  - a Minecraft nickname: fetch textures property from Mojang (async done below)
         applySkin(fName, skinSpec);
 
         ServerLevel level = server.overworld();
-        double sx = x != null ? x : (server.getWorldData().worldGenOptions() != null ? 0.5 : 0.5);
+        double sx = x != null ? x : 0.5;
         double sy = y != null ? y : 64.0;
         double sz = z != null ? z : 0.5;
 
@@ -103,7 +107,7 @@ public class FakePlayerManager {
                     @Override
                     public boolean isSpectator() { return false; }
                 };
-                
+
                 try {
                     CommonListenerCookie cookie = CommonListenerCookie.createInitial(fProfile, false);
                     new ServerGamePacketListenerImpl(server, dummyConnection, bot, cookie) {
@@ -119,7 +123,7 @@ public class FakePlayerManager {
                 fLevel.addNewPlayer(bot);
                 server.getPlayerList().broadcastAll(
                         ClientboundPlayerInfoUpdatePacket.createPlayerInitializing(java.util.List.of(bot)));
-                
+
                 LOGGER.info("[UnAI-Bridge] Fake player '{}' spawned at {}, {}, {}", fName, fx, fy, fz);
             } catch (Throwable t) {
                 LOGGER.error("[UnAI-Bridge] Spawn failed", t);
@@ -130,35 +134,21 @@ public class FakePlayerManager {
     }
 
     private void applySkin(String name, String skinSpec) {
-        // Default: embedded skin PNg - we encode it as a textures payload without signature
-        // (works on offline-mode servers).
         String spec = (skinSpec == null || skinSpec.isBlank()) ? "default" : skinSpec.trim();
         new Thread(() -> {
             try {
                 Property texProp = null;
-                if ("default".equals(spec)) {
-                    texProp = buildLocalDefaultSkinProperty();
-                } else {
-                    // Treat as Mojang nickname -> fetch official skin
+                if (!"default".equals(spec)) {
                     texProp = fetchMojangSkinByName(spec);
                 }
                 if (texProp != null && profile != null) {
                     profile.getProperties().put("textures", texProp);
-                    LOGGER.info("[UnAI-Bridge] Skin applied ({}).", spec);
-                } else {
-                    LOGGER.warn("[UnAI-Bridge] Skin '{}' not applied, using vanilla fallback", spec);
+                    LOGGER.info("[UnAI-Bridge] Skin applied for '{}'", spec);
                 }
             } catch (Throwable t) {
                 LOGGER.warn("[UnAI-Bridge] Skin fetch failed: " + t.getMessage());
             }
         }, "UnAI-SkinLoader").start();
-    }
-
-    private Property buildLocalDefaultSkinProperty() {
-        // Build a textures property pointing at our embedded skin via textures.minecraft.net is
-        // not possible without Mojang hosting; offline servers rely on signed properties.
-        // Fallback: leave null skin (Steve/Alex) and log note; custom nick path works for real skins.
-        return null;
     }
 
     private Property fetchMojangSkinByName(String nick) {
@@ -204,7 +194,7 @@ public class FakePlayerManager {
             }
         });
         bot = null;
-        moveTarget = null;
+        stopMove();
         return "despawned";
     }
 
@@ -247,14 +237,45 @@ public class FakePlayerManager {
         return "ok";
     }
 
-    public synchronized String moveTo(double x, double y, double z) {
+    public synchronized String navigateTo(double x, double y, double z, float radius) {
         if (!isSpawned()) return "error: bot not spawned";
-        moveTarget = new Vec3(x, y, z);
-        return "ok";
+        ServerLevel level = bot.serverLevel();
+        BlockPos start = bot.blockPosition();
+        BlockPos end = new BlockPos((int) Math.floor(x), (int) Math.floor(y), (int) Math.floor(z));
+
+        AStarPathfinder.PathOptions opt = new AStarPathfinder.PathOptions();
+        opt.targetRadius = radius;
+
+        List<BlockPos> path = AStarPathfinder.findPath(level, start, end, opt);
+        if (path == null || path.isEmpty()) {
+            navStatus = "NO_PATH_FOUND";
+            return "error: no path found to target";
+        }
+
+        currentPath = path;
+        pathIndex = 0;
+        targetBlockPos = end;
+        targetRadius = radius;
+        isNavigating = true;
+        navStatus = "NAVIGATING";
+        stuckTicks = 0;
+        lastPos = bot.position();
+
+        LOGGER.info("[UnAI-Bridge] A* Path computed: {} nodes to ({}, {}, {})", path.size(), end.getX(), end.getY(), end.getZ());
+        return "navigating: path length " + path.size();
     }
 
     public synchronized String stopMove() {
-        moveTarget = null;
+        isNavigating = false;
+        currentPath = null;
+        pathIndex = 0;
+        targetBlockPos = null;
+        navStatus = "IDLE";
+        stuckTicks = 0;
+        if (bot != null && !bot.isRemoved()) {
+            bot.setDeltaMovement(Vec3.ZERO);
+            bot.hurtMarked = true;
+        }
         return "ok";
     }
 
@@ -272,15 +293,23 @@ public class FakePlayerManager {
         return "ok";
     }
 
-    /** Called once per server tick from ForgeBridgeMod. */
+    /**
+     * Called on each server tick to process navigation and perception.
+     */
     public void tick() {
-        if (bot == null || bot.isRemoved()) { bot = null; return; }
+        if (bot == null || bot.isRemoved()) {
+            bot = null;
+            return;
+        }
+
+        // Tick Perception Engine buffer
+        PerceptionEngine.getInstance().tick(bot);
 
         // Rotation easing
         if (!Float.isNaN(targetYaw)) {
             float cur = bot.getYRot();
             float diff = normAngle(targetYaw - cur);
-            float step = Math.max(-10f, Math.min(10f, diff * 0.35f));
+            float step = Math.max(-15f, Math.min(15f, diff * 0.40f));
             float next = cur + step;
             if (Math.abs(diff) < 0.5f) { next = targetYaw; targetYaw = Float.NaN; }
             bot.setYRot(next);
@@ -290,29 +319,74 @@ public class FakePlayerManager {
         if (!Float.isNaN(targetPitch)) {
             float cur = bot.getXRot();
             float diff = targetPitch - cur;
-            float step = Math.max(-10f, Math.min(10f, diff * 0.35f));
+            float step = Math.max(-15f, Math.min(15f, diff * 0.40f));
             float next = cur + step;
             if (Math.abs(diff) < 0.5f) { next = targetPitch; targetPitch = Float.NaN; }
             bot.setXRot(next);
         }
 
-        // Straight-line movement (v1 — A* integration replaces this)
-        if (moveTarget != null) {
+        // A* Path execution
+        if (isNavigating && currentPath != null && pathIndex < currentPath.size()) {
             Vec3 pos = bot.position();
-            Vec3 delta = moveTarget.subtract(pos);
-            double dist = Math.sqrt(delta.x*delta.x + delta.z*delta.z);
-            double vert = delta.y;
-            if (dist < 1.2) {
-                bot.setDeltaMovement(Vec3.ZERO);
-                bot.hurtMarked = true;
-                moveTarget = null;
+
+            // Stuck detection
+            if (lastPos != null && pos.distanceToSqr(lastPos) < 0.005) {
+                stuckTicks++;
+                if (stuckTicks > STUCK_THRESHOLD) {
+                    LOGGER.warn("[UnAI-Bridge] Bot stuck during pathfinding. Stopping.");
+                    stopMove();
+                    navStatus = "STUCK";
+                    return;
+                }
             } else {
-                double spd = Math.min(0.30, moveSpeed / 20.0);
-                Vec3 vel = new Vec3(delta.x / dist, 0, delta.z / dist).scale(spd);
-                if (vert > 0.6 && bot.onGround()) bot.jumpFromGround();
-                bot.setDeltaMovement(vel.x, bot.getDeltaMovement().y, vel.z);
+                stuckTicks = 0;
+            }
+            lastPos = pos;
+
+            BlockPos node = currentPath.get(pathIndex);
+            double targetX = node.getX() + 0.5;
+            double targetY = node.getY();
+            double targetZ = node.getZ() + 0.5;
+
+            double dx = targetX - pos.x;
+            double dy = targetY - pos.y;
+            double dz = targetZ - pos.z;
+            double horizontalDistSq = dx * dx + dz * dz;
+
+            // If close to current waypoint, advance
+            if (horizontalDistSq < 0.35 && Math.abs(dy) < 1.2) {
+                pathIndex++;
+                if (pathIndex >= currentPath.size()) {
+                    isNavigating = false;
+                    navStatus = "ARRIVED";
+                    bot.setDeltaMovement(Vec3.ZERO);
+                    bot.hurtMarked = true;
+                    return;
+                }
+                node = currentPath.get(pathIndex);
+                targetX = node.getX() + 0.5;
+                targetY = node.getY();
+                targetZ = node.getZ() + 0.5;
+                dx = targetX - pos.x;
+                dy = targetY - pos.y;
+                dz = targetZ - pos.z;
+                horizontalDistSq = dx * dx + dz * dz;
+            }
+
+            double hDist = Math.sqrt(horizontalDistSq);
+            if (hDist > 0.01) {
+                double speed = 0.28; // ~5.6 blocks/second sprint
+                Vec3 vel = new Vec3(dx / hDist * speed, bot.getDeltaMovement().y, dz / hDist * speed);
+
+                // Jump if step up
+                if (dy > 0.5 && bot.onGround()) {
+                    bot.jumpFromGround();
+                }
+
+                bot.setDeltaMovement(vel);
                 bot.hurtMarked = true;
-                float yawToTarget = (float) (-Math.toDegrees(Math.atan2(delta.x, delta.z)));
+
+                float yawToTarget = (float) (-Math.toDegrees(Math.atan2(dx, dz)));
                 bot.setYRot(yawToTarget);
                 bot.setYHeadRot(yawToTarget);
                 bot.setYBodyRot(yawToTarget);
@@ -327,16 +401,19 @@ public class FakePlayerManager {
         return a;
     }
 
+    public String navStatusJson() {
+        if (!isSpawned()) return "{\"status\":\"NOT_SPAWNED\"}";
+        return String.format("{\"status\":\"%s\",\"navigating\":%b,\"path_index\":%d,\"path_total\":%d,\"target\":%s}",
+                navStatus, isNavigating, pathIndex, (currentPath != null ? currentPath.size() : 0),
+                (targetBlockPos != null ? String.format("{\"x\":%d,\"y\":%d,\"z\":%d}", targetBlockPos.getX(), targetBlockPos.getY(), targetBlockPos.getZ()) : "null"));
+    }
+
     public String statusJson() {
         if (!isSpawned()) return "{\"spawned\": false}";
         Vec3 p = bot.position();
-        return "{\"spawned\":true,\"name\":\"" + bot.getName().getString()
-                + "\",\"x\":" + round2(p.x) + ",\"y\":" + round2(p.y) + ",\"z\":" + round2(p.z)
-                + ",\"yaw\":" + round2(bot.getYRot()) + ",\"pitch\":" + round2(bot.getXRot())
-                + ",\"moving\":" + (moveTarget != null) + "}";
+        return String.format("{\"spawned\":true,\"name\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"yaw\":%.2f,\"pitch\":%.2f,\"nav_status\":\"%s\",\"moving\":%b,\"health\":%.1f,\"hunger\":%d}",
+                bot.getName().getString(), p.x, p.y, p.z, bot.getYRot(), bot.getXRot(), navStatus, isNavigating, bot.getHealth(), bot.getFoodData().getFoodLevel());
     }
-
-    private double round2(double v) { return Math.round(v * 100.0) / 100.0; }
 
     /** Dummy Connection for a fake player: no socket traffic. */
     private static class DummyConnection extends Connection {

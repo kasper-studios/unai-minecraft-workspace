@@ -206,10 +206,15 @@ public class ForgeBridgeMod {
         httpServer.createContext("/api/bot/say", new BotSayHandler());
         httpServer.createContext("/api/bot/action", new BotActionHandler());
         httpServer.createContext("/api/bot/equip", new BotEquipHandler());
-        httpServer.createContext("/api/bot/move_to", new BotMoveHandler());
+        httpServer.createContext("/api/bot/navigate", new BotNavigateHandler());
+        httpServer.createContext("/api/bot/nav_status", new BotNavStatusHandler());
         httpServer.createContext("/api/bot/stop_move", new BotStopMoveHandler());
         httpServer.createContext("/api/bot/look_at", new BotLookHandler());
         httpServer.createContext("/api/bot/status", new BotStatusHandler());
+        httpServer.createContext("/api/bot/view_ascii", new BotViewAsciiHandler());
+        httpServer.createContext("/api/bot/radar", new BotRadarHandler());
+        httpServer.createContext("/api/bot/target", new BotTargetHandler());
+        httpServer.createContext("/api/bot/frames", new BotFramesHandler());
 
         httpServer.start();
     }
@@ -716,12 +721,119 @@ public class ForgeBridgeMod {
             if (!checkAuth(exchange)) return;
             String body = readBody(exchange);
             double x = 0, y = 0, z = 0;
+            float radius = 1.2f;
             try { x = Double.parseDouble(extractJsonField(body, "x")); } catch (Exception e) {}
             try { y = Double.parseDouble(extractJsonField(body, "y")); } catch (Exception e) {}
             try { z = Double.parseDouble(extractJsonField(body, "z")); } catch (Exception e) {}
-            String res = FakePlayerManager.getInstance().moveTo(x, y, z);
-            if (!"ok".equals(res)) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + res + "\"}");
-            else sendJsonResponse(exchange, 200, "{\"ok\": true}");
+            try { radius = Float.parseFloat(extractJsonField(body, "radius")); } catch (Exception e) {}
+            String res = FakePlayerManager.getInstance().navigateTo(x, y, z, radius);
+            if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
+        }
+    }
+
+    private class BotNavigateHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String body = readBody(exchange);
+            double x = 0, y = 0, z = 0;
+            float radius = 1.2f;
+            try { x = Double.parseDouble(extractJsonField(body, "x")); } catch (Exception e) {}
+            try { y = Double.parseDouble(extractJsonField(body, "y")); } catch (Exception e) {}
+            try { z = Double.parseDouble(extractJsonField(body, "z")); } catch (Exception e) {}
+            try { radius = Float.parseFloat(extractJsonField(body, "radius")); } catch (Exception e) {}
+            String res = FakePlayerManager.getInstance().navigateTo(x, y, z, radius);
+            if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
+        }
+    }
+
+    private class BotNavStatusHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            sendJsonResponse(exchange, 200, "{\"ok\": true, \"nav\": " + FakePlayerManager.getInstance().navStatusJson() + "}");
+        }
+    }
+
+    private class BotViewAsciiHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            int width = 36, height = 18;
+            float fov = 70.0f;
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null) {
+                for (String part : query.split("&")) {
+                    if (part.startsWith("w=")) try { width = Integer.parseInt(part.substring(2)); } catch (Exception ignored) {}
+                    if (part.startsWith("h=")) try { height = Integer.parseInt(part.substring(2)); } catch (Exception ignored) {}
+                    if (part.startsWith("fov=")) try { fov = Float.parseFloat(part.substring(4)); } catch (Exception ignored) {}
+                }
+            }
+            ServerPlayer bot = FakePlayerManager.getInstance().getBot();
+            if (bot == null) {
+                sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"Bot not spawned\"}");
+                return;
+            }
+            String view = PerceptionEngine.getInstance().render3DView(bot, width, height, fov);
+            sendJsonResponse(exchange, 200, "{\"ok\": true, \"view\": \"" + escapeJson(view) + "\"}");
+        }
+    }
+
+    private class BotRadarHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            int radius = 10;
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null) {
+                for (String part : query.split("&")) {
+                    if (part.startsWith("r=")) try { radius = Integer.parseInt(part.substring(2)); } catch (Exception ignored) {}
+                }
+            }
+            ServerPlayer bot = FakePlayerManager.getInstance().getBot();
+            if (bot == null) {
+                sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"Bot not spawned\"}");
+                return;
+            }
+            String radar = PerceptionEngine.getInstance().render2DRadar(bot, radius);
+            sendJsonResponse(exchange, 200, "{\"ok\": true, \"radar\": \"" + escapeJson(radar) + "\"}");
+        }
+    }
+
+    private class BotTargetHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            ServerPlayer bot = FakePlayerManager.getInstance().getBot();
+            if (bot == null) {
+                sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"Bot not spawned\"}");
+                return;
+            }
+            String targetJson = PerceptionEngine.getInstance().getTargetJson(bot);
+            sendJsonResponse(exchange, 200, "{\"ok\": true, \"target\": " + targetJson + "}");
+        }
+    }
+
+    private class BotFramesHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            int limit = 10;
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null) {
+                for (String part : query.split("&")) {
+                    if (part.startsWith("limit=")) try { limit = Integer.parseInt(part.substring(6)); } catch (Exception ignored) {}
+                }
+            }
+            List<PerceptionEngine.FrameSnapshot> frames = PerceptionEngine.getInstance().getRecentFrames(limit);
+            List<String> list = new ArrayList<>();
+            for (PerceptionEngine.FrameSnapshot f : frames) {
+                list.add(String.format("{\"timestamp\":%d,\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"yaw\":%.1f,\"pitch\":%.1f,\"target\":%s}",
+                        f.timestamp, f.x, f.y, f.z, f.yaw, f.pitch, f.crosshairTarget));
+            }
+            sendJsonResponse(exchange, 200, "{\"ok\": true, \"count\": " + list.size() + ", \"frames\": [" + String.join(",", list) + "]}");
         }
     }
 
