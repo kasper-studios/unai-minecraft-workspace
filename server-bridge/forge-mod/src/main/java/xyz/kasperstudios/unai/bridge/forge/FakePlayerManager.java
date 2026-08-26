@@ -3,6 +3,7 @@ package xyz.kasperstudios.unai.bridge.forge;
 import com.mojang.authlib.GameProfile;
 import com.mojang.authlib.properties.Property;
 import com.mojang.logging.LogUtils;
+import io.netty.channel.embedded.EmbeddedChannel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.Connection;
 import net.minecraft.network.PacketSendListener;
@@ -107,22 +108,15 @@ public class FakePlayerManager {
 
         server.execute(() -> {
             try {
-                Connection dummyConnection = new DummyConnection();
+                DummyConnection dummyConnection = new DummyConnection();
                 bot = new ServerPlayer(server, fLevel, fProfile,
                         net.minecraft.server.level.ClientInformation.createDefault()) {
                     @Override
                     public boolean isSpectator() { return false; }
                 };
 
-                try {
-                    CommonListenerCookie cookie = CommonListenerCookie.createInitial(fProfile, false);
-                    new ServerGamePacketListenerImpl(server, dummyConnection, bot, cookie) {
-                        @Override
-                        public void send(Packet<?> packet, PacketSendListener listener) {}
-                    };
-                } catch (Throwable t) {
-                    LOGGER.warn("[UnAI-Bridge] Failed to attach dummy listener", t);
-                }
+                CommonListenerCookie cookie = CommonListenerCookie.createInitial(fProfile, false);
+                new DummyGamePacketListener(server, dummyConnection, bot, cookie);
 
                 bot.setPosRaw(fx, fy, fz);
                 bot.setUUID(profile.getId());
@@ -150,7 +144,7 @@ public class FakePlayerManager {
                 // Add to world level
                 fLevel.addNewPlayer(bot);
 
-                // Inject into server PlayerList so tablist and /tellraw see the bot
+                // Inject strictly into server PlayerList.players and playersByUUID
                 injectIntoPlayerList(server.getPlayerList(), bot);
 
                 // Broadcast player info with all actions (ADD_PLAYER, UPDATE_LISTED = true, etc.)
@@ -180,7 +174,7 @@ public class FakePlayerManager {
     }
 
     /**
-     * Injects the bot into PlayerList.players and PlayerList.playersByUUID using reflection.
+     * Injects the bot strictly into PlayerList.players and PlayerList.playersByUUID using reflection.
      */
     @SuppressWarnings("unchecked")
     private void injectIntoPlayerList(PlayerList playerList, ServerPlayer player) {
@@ -190,14 +184,27 @@ public class FakePlayerManager {
                 f.setAccessible(true);
                 Object val = f.get(playerList);
                 if (val instanceof List) {
-                    List<ServerPlayer> list = (List<ServerPlayer>) val;
-                    if (!list.contains(player)) {
-                        list.add(player);
+                    List<?> list = (List<?>) val;
+                    // Check if it's the players list (either empty or contains ServerPlayers)
+                    if (list.isEmpty() || list.get(0) instanceof ServerPlayer) {
+                        List<ServerPlayer> playerListCast = (List<ServerPlayer>) list;
+                        if (!playerListCast.contains(player)) {
+                            playerListCast.add(player);
+                        }
                     }
                 } else if (val instanceof Map) {
-                    Map<Object, Object> map = (Map<Object, Object>) val;
-                    map.put(player.getUUID(), player);
-                    map.put(player.getName().getString().toLowerCase(Locale.ROOT), player);
+                    Map<?, ?> map = (Map<?, ?>) val;
+                    // Only target maps whose values are ServerPlayer (playersByUUID), NOT ServerStatsCounter or PlayerAdvancements!
+                    if (!map.isEmpty()) {
+                        Object firstVal = map.values().iterator().next();
+                        if (firstVal instanceof ServerPlayer) {
+                            Map<Object, Object> castMap = (Map<Object, Object>) map;
+                            castMap.put(player.getUUID(), player);
+                        }
+                    } else if (f.getName().toLowerCase(Locale.ROOT).contains("uuid")) {
+                        Map<Object, Object> castMap = (Map<Object, Object>) map;
+                        castMap.put(player.getUUID(), player);
+                    }
                 }
             }
         } catch (Throwable t) {
@@ -216,12 +223,17 @@ public class FakePlayerManager {
                 f.setAccessible(true);
                 Object val = f.get(playerList);
                 if (val instanceof List) {
-                    List<ServerPlayer> list = (List<ServerPlayer>) val;
-                    list.remove(player);
+                    List<?> list = (List<?>) val;
+                    if (!list.isEmpty() && list.get(0) instanceof ServerPlayer) {
+                        List<ServerPlayer> castList = (List<ServerPlayer>) list;
+                        castList.remove(player);
+                    }
                 } else if (val instanceof Map) {
-                    Map<Object, Object> map = (Map<Object, Object>) val;
-                    map.remove(player.getUUID());
-                    map.remove(player.getName().getString().toLowerCase(Locale.ROOT));
+                    Map<?, ?> map = (Map<?, ?>) val;
+                    if (!map.isEmpty() && map.values().iterator().next() instanceof ServerPlayer) {
+                        Map<Object, Object> castMap = (Map<Object, Object>) map;
+                        castMap.remove(player.getUUID());
+                    }
                 }
             }
         } catch (Throwable t) {
@@ -540,11 +552,23 @@ public class FakePlayerManager {
                 bot.getName().getString(), p.x, p.y, p.z, bot.getYRot(), bot.getXRot(), navStatus, isNavigating, bot.getHealth(), bot.getFoodData().getFoodLevel());
     }
 
-    /** Dummy Connection for a fake player: no socket traffic. */
+    /** Dummy Connection for a fake player: safe embedded channel & no-op flush. */
     private static class DummyConnection extends Connection {
         public DummyConnection() {
             super(PacketFlow.SERVERBOUND);
+            try {
+                for (Field f : Connection.class.getDeclaredFields()) {
+                    if (io.netty.channel.Channel.class.isAssignableFrom(f.getType())) {
+                        f.setAccessible(true);
+                        f.set(this, new EmbeddedChannel());
+                        break;
+                    }
+                }
+            } catch (Throwable ignored) {}
         }
+
+        @Override
+        public void flushChannel() {}
 
         @Override
         public void send(Packet<?> packet, PacketSendListener listener) {}
@@ -559,8 +583,33 @@ public class FakePlayerManager {
         public boolean isConnected() { return true; }
 
         @Override
+        public boolean isMemoryConnection() { return true; }
+
+        @Override
         public java.net.SocketAddress getRemoteAddress() {
             return new InetSocketAddress("127.0.0.1", 0);
         }
+    }
+
+    /** Dummy GamePacketListener: ignores packet flushes and tick loops. */
+    private static class DummyGamePacketListener extends ServerGamePacketListenerImpl {
+        public DummyGamePacketListener(MinecraftServer server, Connection connection, ServerPlayer player, CommonListenerCookie cookie) {
+            super(server, connection, player, cookie);
+        }
+
+        @Override
+        public void send(Packet<?> packet, PacketSendListener listener) {}
+
+        @Override
+        public void send(Packet<?> packet) {}
+
+        @Override
+        public void resumeFlushing() {}
+
+        @Override
+        public void suspendFlushing() {}
+
+        @Override
+        public void tick() {}
     }
 }
