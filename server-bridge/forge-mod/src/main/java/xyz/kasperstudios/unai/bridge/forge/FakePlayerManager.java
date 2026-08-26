@@ -113,6 +113,8 @@ public class FakePlayerManager {
                         net.minecraft.server.level.ClientInformation.createDefault()) {
                     @Override
                     public boolean isSpectator() { return false; }
+                    @Override
+                    public boolean isCreative() { return false; }
                 };
 
                 CommonListenerCookie cookie = CommonListenerCookie.createInitial(fProfile, false);
@@ -120,6 +122,8 @@ public class FakePlayerManager {
 
                 bot.setPosRaw(fx, fy, fz);
                 bot.setUUID(profile.getId());
+                bot.gameMode.changeGameModeForPlayer(net.minecraft.world.level.GameType.SURVIVAL);
+                bot.setInvulnerable(false);
 
                 // Enable all 3D skin model layers (cape, jacket, left/right sleeve, left/right pants, hat/hood)
                 try {
@@ -260,31 +264,41 @@ public class FakePlayerManager {
         }
     }
 
+    private Property buildLocalDefaultSkinProperty() {
+        String value = "ewogICJ0aW1lc3RhbXAiIDogMTc4Nzc2OTc5ODM1MiwKICAicHJvZmlsZUlkIiA6ICJmZDIwMGYwMDE4OTI0NzgxODI5OWIzZjE5Yzc4Y2E3MSIsCiAgInByb2ZpbGVOYW1lIiA6ICJ0dXNnIiwKICAic2lnbmF0dXJlUmVxdWlyZWQiIDogdHJ1ZSwKICAidGV4dHVyZXMiIDogewogICAgIlNLSU4iIDogewogICAgICAidXJsIiA6ICJodHRwOi8vdGV4dHVyZXMubWluZWNyYWZ0Lm5ldC90ZXh0dXJlLzE4MDY0MmRkMjk1Y2EzYjNhODE1NDkyOTQ1YWZjZmQwYmQxNzRjYmQ1MGRjZDU3ZGM0Y2I2YzM0ZTYxZGRhYzUiCiAgICB9CiAgfQp9";
+        String sig = "tkp6cXkXK/eRjoFdqgk5eg6YjBWmjwZQfl2DwGb5aXLhYuA+nTLppClSyHdGtYAnn/mzTYmT43e2OtTHH7pM1H5yA9+IC5ByOeX6uSPtw3QwTkwoZhCsWFUxqBD+WFtFCbGyIafZYRqhWw1EriSJN+MFV7FtdudnJbtCZEq6ZO1H1sVSSSLKXcm6MhC6u7BPX61hJaFztAGlYEAefvUnqPOZCw5GfUDS/vmDBEU1uitRxLjd/iUEhwpvjaJe6v4wv78EHWIogGaffb8rRequiPIWp8WCnUDI2tIO71s20A+Kt/tvkfYj9dI4/jjzxQk3cX6mhzMqdB64tZyYeHt4ovVOJV/wybeK7Av5ipe3NZUIh4c7aGHRhZq+Vud/oVKEdIfaBhubVtXv3tLC64NocWfXfmGsvKjP4u5kqtI2L1uttMHlFLKT3B9l0S4Kgbv5I4Z0PT7CpK3jLgSgYUNdCfh6OABV96+YhYRTXhhcJUfG8caC1qk/2juwnXugbiWpaYhsXVTDdrWErBDRh51ppJfMHjUWXOf0Gw2ndMVwuEJAcGjYfpmmR6oB34/4lVndLC27BwDDfTyxM7smrFRFPCzk8yXPGSCWq7/CXi17o1DjtEoH9Wc9Uyaq4Yk5tR8Xl+ao+MO/Xsrq7mmvaCr36r0CwWebjrU5JMe2F1oFcFk=";
+        return new Property("textures", value, sig);
+    }
+
     private void applySkin(String name, String skinSpec) {
         String spec = (skinSpec == null || skinSpec.isBlank()) ? "default" : skinSpec.trim();
-        new Thread(() -> {
-            try {
-                Property texProp = null;
-                if (!"default".equals(spec)) {
-                    texProp = fetchMojangSkinByName(spec);
-                }
-                if (texProp != null && profile != null) {
-                    profile.getProperties().put("textures", texProp);
-                    LOGGER.info("[UnAI-Bridge] Skin applied for '{}'", spec);
+        Property defaultProp = buildLocalDefaultSkinProperty();
+        if (profile != null) {
+            profile.getProperties().put("textures", defaultProp);
+        }
 
-                    // Re-broadcast tab info with updated textures
-                    if (server != null && bot != null) {
-                        server.execute(() -> {
-                            server.getPlayerList().broadcastAll(
-                                    new ClientboundPlayerInfoUpdatePacket(EnumSet.of(ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER, ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LISTED), List.of(bot))
-                            );
-                        });
+        if (!"default".equals(spec)) {
+            new Thread(() -> {
+                try {
+                    Property texProp = fetchMojangSkinByName(spec);
+                    if (texProp != null && profile != null) {
+                        profile.getProperties().removeAll("textures");
+                        profile.getProperties().put("textures", texProp);
+                        LOGGER.info("[UnAI-Bridge] Custom skin applied for '{}'", spec);
+
+                        if (server != null && bot != null) {
+                            server.execute(() -> {
+                                server.getPlayerList().broadcastAll(
+                                        new ClientboundPlayerInfoUpdatePacket(EnumSet.of(ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER, ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LISTED), List.of(bot))
+                                );
+                            });
+                        }
                     }
+                } catch (Throwable t) {
+                    LOGGER.warn("[UnAI-Bridge] Custom skin fetch failed: " + t.getMessage());
                 }
-            } catch (Throwable t) {
-                LOGGER.warn("[UnAI-Bridge] Skin fetch failed: " + t.getMessage());
-            }
-        }, "UnAI-SkinLoader").start();
+            }, "UnAI-SkinLoader").start();
+        }
     }
 
     private Property fetchMojangSkinByName(String nick) {
@@ -346,9 +360,24 @@ public class FakePlayerManager {
     public synchronized String action(String action) {
         if (!isSpawned()) return "error: bot not spawned";
         switch (action.toLowerCase()) {
-            case "jump" -> bot.jumpFromGround();
-            case "swing" -> server.execute(() -> bot.swing(InteractionHand.MAIN_HAND, true));
-            case "sneak" -> bot.setShiftKeyDown(!bot.isShiftKeyDown());
+            case "jump" -> server.execute(() -> {
+                bot.setDeltaMovement(bot.getDeltaMovement().x, 0.48, bot.getDeltaMovement().z);
+                bot.hasImpulse = true;
+                bot.hurtMarked = true;
+                server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket(bot));
+            });
+            case "swing" -> server.execute(() -> {
+                bot.swing(InteractionHand.MAIN_HAND, true);
+                server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundAnimatePacket(bot, 0));
+            });
+            case "sneak" -> server.execute(() -> {
+                boolean nextShift = !bot.isShiftKeyDown();
+                bot.setShiftKeyDown(nextShift);
+                bot.setPose(nextShift ? net.minecraft.world.entity.Pose.CROUCHING : net.minecraft.world.entity.Pose.STANDING);
+                if (bot.getEntityData().isDirty()) {
+                    server.getPlayerList().broadcastAll(new ClientboundSetEntityDataPacket(bot.getId(), bot.getEntityData().packDirty()));
+                }
+            });
             case "spin" -> { targetYaw = bot.getYRot() + 360f; }
             default -> { return "unknown_action"; }
         }
