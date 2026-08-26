@@ -9,25 +9,31 @@ import net.minecraft.network.PacketSendListener;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.PacketFlow;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
+import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
+import net.minecraft.server.players.PlayerList;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 
+import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.util.*;
 
 /**
  * FakePlayerManager - manages the virtual AI avatar "bot player" in Forge 1.21.1.
  * Features:
- * - Offline-mode fake player entity with custom skin injection
+ * - Offline-mode fake player entity with custom skin injection & full 3D layer visibility
+ * - Full TabList synchronization via PlayerList injection & ClientboundPlayerInfoUpdatePacket
  * - 3D A* Pathfinding (KasHub engine) with jump and obstacle navigation
  * - Perception Engine (3D ASCII View, 2D POV Radar, Crosshair Target, 60-Frame Ring Buffer)
  */
@@ -120,17 +126,126 @@ public class FakePlayerManager {
 
                 bot.setPosRaw(fx, fy, fz);
                 bot.setUUID(profile.getId());
-                fLevel.addNewPlayer(bot);
-                server.getPlayerList().broadcastAll(
-                        ClientboundPlayerInfoUpdatePacket.createPlayerInitializing(java.util.List.of(bot)));
 
-                LOGGER.info("[UnAI-Bridge] Fake player '{}' spawned at {}, {}, {}", fName, fx, fy, fz);
+                // Enable all 3D skin model layers (cape, jacket, left/right sleeve, left/right pants, hat/hood)
+                try {
+                    for (Field f : Player.class.getDeclaredFields()) {
+                        if (f.getType() == net.minecraft.network.syncher.EntityDataAccessor.class) {
+                            f.setAccessible(true);
+                            Object val = f.get(null);
+                            if (val instanceof net.minecraft.network.syncher.EntityDataAccessor<?> acc) {
+                                if (f.getName().equals("DATA_PLAYER_MODE_CUSTOMISATION") || f.getName().equals("f_36081_")) {
+                                    @SuppressWarnings("unchecked")
+                                    net.minecraft.network.syncher.EntityDataAccessor<Byte> byteAcc = (net.minecraft.network.syncher.EntityDataAccessor<Byte>) acc;
+                                    bot.getEntityData().set(byteAcc, (byte) 127);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } catch (Throwable t) {
+                    LOGGER.warn("[UnAI-Bridge] Failed to set player model customization: " + t.getMessage());
+                }
+
+                // Add to world level
+                fLevel.addNewPlayer(bot);
+
+                // Inject into server PlayerList so tablist and /tellraw see the bot
+                injectIntoPlayerList(server.getPlayerList(), bot);
+
+                // Broadcast player info with all actions (ADD_PLAYER, UPDATE_LISTED = true, etc.)
+                EnumSet<ClientboundPlayerInfoUpdatePacket.Action> actions = EnumSet.of(
+                        ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER,
+                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LISTED,
+                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LATENCY,
+                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_GAME_MODE,
+                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_DISPLAY_NAME
+                );
+                ClientboundPlayerInfoUpdatePacket tabPacket = new ClientboundPlayerInfoUpdatePacket(actions, List.of(bot));
+                server.getPlayerList().broadcastAll(tabPacket);
+
+                // Broadcast entity spawn and data to nearby players
+                server.getPlayerList().broadcastAll(new ClientboundAddEntityPacket(bot, 0, bot.blockPosition()));
+                if (bot.getEntityData().isDirty()) {
+                    server.getPlayerList().broadcastAll(new ClientboundSetEntityDataPacket(bot.getId(), bot.getEntityData().packDirty()));
+                }
+
+                LOGGER.info("[UnAI-Bridge] Fake player '{}' spawned at {}, {}, {} and registered in TabList", fName, fx, fy, fz);
             } catch (Throwable t) {
                 LOGGER.error("[UnAI-Bridge] Spawn failed", t);
             }
         });
 
         return "spawned:" + fName;
+    }
+
+    /**
+     * Injects the bot into PlayerList.players and PlayerList.playersByUUID using reflection.
+     */
+    @SuppressWarnings("unchecked")
+    private void injectIntoPlayerList(PlayerList playerList, ServerPlayer player) {
+        if (playerList == null || player == null) return;
+        try {
+            for (Field f : PlayerList.class.getDeclaredFields()) {
+                f.setAccessible(true);
+                Object val = f.get(playerList);
+                if (val instanceof List) {
+                    List<ServerPlayer> list = (List<ServerPlayer>) val;
+                    if (!list.contains(player)) {
+                        list.add(player);
+                    }
+                } else if (val instanceof Map) {
+                    Map<Object, Object> map = (Map<Object, Object>) val;
+                    map.put(player.getUUID(), player);
+                    map.put(player.getName().getString().toLowerCase(Locale.ROOT), player);
+                }
+            }
+        } catch (Throwable t) {
+            LOGGER.warn("[UnAI-Bridge] Reflection injection into PlayerList failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Removes the bot from PlayerList using reflection.
+     */
+    @SuppressWarnings("unchecked")
+    private void removeFromPlayerList(PlayerList playerList, ServerPlayer player) {
+        if (playerList == null || player == null) return;
+        try {
+            for (Field f : PlayerList.class.getDeclaredFields()) {
+                f.setAccessible(true);
+                Object val = f.get(playerList);
+                if (val instanceof List) {
+                    List<ServerPlayer> list = (List<ServerPlayer>) val;
+                    list.remove(player);
+                } else if (val instanceof Map) {
+                    Map<Object, Object> map = (Map<Object, Object>) val;
+                    map.remove(player.getUUID());
+                    map.remove(player.getName().getString().toLowerCase(Locale.ROOT));
+                }
+            }
+        } catch (Throwable t) {
+            LOGGER.warn("[UnAI-Bridge] Reflection removal from PlayerList failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Called when a player joins to ensure they get the bot in their TabList.
+     */
+    public void onPlayerJoin(ServerPlayer joiningPlayer) {
+        if (bot != null && !bot.isRemoved() && joiningPlayer != null) {
+            try {
+                EnumSet<ClientboundPlayerInfoUpdatePacket.Action> actions = EnumSet.of(
+                        ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER,
+                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LISTED,
+                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LATENCY,
+                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_GAME_MODE,
+                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_DISPLAY_NAME
+                );
+                joiningPlayer.connection.send(new ClientboundPlayerInfoUpdatePacket(actions, List.of(bot)));
+                joiningPlayer.connection.send(new ClientboundAddEntityPacket(bot, 0, bot.blockPosition()));
+            } catch (Throwable ignored) {}
+        }
     }
 
     private void applySkin(String name, String skinSpec) {
@@ -144,6 +259,15 @@ public class FakePlayerManager {
                 if (texProp != null && profile != null) {
                     profile.getProperties().put("textures", texProp);
                     LOGGER.info("[UnAI-Bridge] Skin applied for '{}'", spec);
+
+                    // Re-broadcast tab info with updated textures
+                    if (server != null && bot != null) {
+                        server.execute(() -> {
+                            server.getPlayerList().broadcastAll(
+                                    new ClientboundPlayerInfoUpdatePacket(EnumSet.of(ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER, ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LISTED), List.of(bot))
+                            );
+                        });
+                    }
                 }
             } catch (Throwable t) {
                 LOGGER.warn("[UnAI-Bridge] Skin fetch failed: " + t.getMessage());
@@ -187,6 +311,7 @@ public class FakePlayerManager {
         final ServerPlayer b = bot;
         server.execute(() -> {
             try {
+                removeFromPlayerList(server.getPlayerList(), b);
                 b.discard();
                 server.getPlayerList().remove(b);
             } catch (Throwable t) {

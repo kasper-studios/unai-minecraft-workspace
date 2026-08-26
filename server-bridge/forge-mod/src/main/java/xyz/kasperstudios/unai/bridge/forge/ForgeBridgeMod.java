@@ -93,6 +93,9 @@ public class ForgeBridgeMod {
     public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
         String name = event.getEntity().getName().getString();
         addEvent("join", name, name + " joined the game");
+        if (event.getEntity() instanceof ServerPlayer sp) {
+            FakePlayerManager.getInstance().onPlayerJoin(sp);
+        }
     }
 
     @SubscribeEvent
