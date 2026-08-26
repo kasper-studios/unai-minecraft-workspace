@@ -435,21 +435,77 @@ public class FakePlayerManager {
         return "ok";
     }
 
+    private static String escapeJson(String text) {
+        if (text == null) return "";
+        return text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
+    }
+
+    public synchronized String getInventoryJson() {
+        if (!isSpawned()) return "{\"error\":\"bot not spawned\"}";
+        StringBuilder sb = new StringBuilder("{");
+        sb.append("\"selected_slot\":").append(bot.getInventory().selected).append(",");
+        sb.append("\"mainhand\":\"").append(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(bot.getMainHandItem().getItem()).toString()).append("\",");
+        sb.append("\"offhand\":\"").append(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(bot.getOffhandItem().getItem()).toString()).append("\",");
+        sb.append("\"armor\":{");
+        sb.append("\"head\":\"").append(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(bot.getItemBySlot(EquipmentSlot.HEAD).getItem()).toString()).append("\",");
+        sb.append("\"chest\":\"").append(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(bot.getItemBySlot(EquipmentSlot.CHEST).getItem()).toString()).append("\",");
+        sb.append("\"legs\":\"").append(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(bot.getItemBySlot(EquipmentSlot.LEGS).getItem()).toString()).append("\",");
+        sb.append("\"feet\":\"").append(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(bot.getItemBySlot(EquipmentSlot.FEET).getItem()).toString()).append("\"");
+        sb.append("},\"items\":[");
+        boolean first = true;
+        for (int i = 0; i < bot.getInventory().getContainerSize(); i++) {
+            ItemStack st = bot.getInventory().getItem(i);
+            if (!st.isEmpty()) {
+                if (!first) sb.append(",");
+                first = false;
+                sb.append("{\"slot\":").append(i)
+                  .append(",\"id\":\"").append(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(st.getItem()).toString()).append("\"")
+                  .append(",\"count\":").append(st.getCount())
+                  .append(",\"name\":\"").append(escapeJson(st.getHoverName().getString())).append("\"}");
+            }
+        }
+        sb.append("]}");
+        return sb.toString();
+    }
+
+    public synchronized String dropItem(int slot, int count) {
+        if (!isSpawned()) return "error: bot not spawned";
+        server.execute(() -> {
+            ItemStack st = (slot >= 0 && slot < bot.getInventory().getContainerSize())
+                    ? bot.getInventory().getItem(slot)
+                    : bot.getMainHandItem();
+            if (!st.isEmpty()) {
+                int toDrop = (count <= 0 || count > st.getCount()) ? st.getCount() : count;
+                ItemStack dropStack = st.split(toDrop);
+                bot.drop(dropStack, true, false);
+            }
+        });
+        return "ok";
+    }
+
     public synchronized String equip(String slot, String itemId) {
         if (!isSpawned()) return "error: bot not spawned";
         var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(
                 net.minecraft.resources.ResourceLocation.parse(itemId));
-        if (item == net.minecraft.world.item.Items.AIR && !"air".equals(itemId)) return "unknown_item";
-        ItemStack stack = new ItemStack(item);
+        if (item == net.minecraft.world.item.Items.AIR && !"air".equals(itemId) && !"minecraft:air".equals(itemId)) return "unknown_item";
+        ItemStack stack = (item == net.minecraft.world.item.Items.AIR) ? ItemStack.EMPTY : new ItemStack(item);
         server.execute(() -> {
-            switch (slot) {
-                case "head" -> bot.setItemSlot(EquipmentSlot.HEAD, stack.copy());
-                case "chest" -> bot.setItemSlot(EquipmentSlot.CHEST, stack.copy());
-                case "legs" -> bot.setItemSlot(EquipmentSlot.LEGS, stack.copy());
-                case "feet" -> bot.setItemSlot(EquipmentSlot.FEET, stack.copy());
-                case "offhand" -> bot.setItemSlot(EquipmentSlot.OFFHAND, stack.copy());
-                default -> bot.setItemSlot(EquipmentSlot.MAINHAND, stack.copy());
+            EquipmentSlot eqSlot = switch (slot.toLowerCase()) {
+                case "head", "helmet" -> EquipmentSlot.HEAD;
+                case "chest", "chestplate" -> EquipmentSlot.CHEST;
+                case "legs", "leggings" -> EquipmentSlot.LEGS;
+                case "feet", "boots" -> EquipmentSlot.FEET;
+                case "offhand" -> EquipmentSlot.OFFHAND;
+                default -> EquipmentSlot.MAINHAND;
+            };
+            bot.setItemSlot(eqSlot, stack);
+
+            // Broadcast official equipment packet to all players
+            List<com.mojang.datafixers.util.Pair<EquipmentSlot, ItemStack>> list = new ArrayList<>();
+            for (EquipmentSlot es : EquipmentSlot.values()) {
+                list.add(com.mojang.datafixers.util.Pair.of(es, bot.getItemBySlot(es)));
             }
+            server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket(bot.getId(), list));
         });
         return "ok";
     }

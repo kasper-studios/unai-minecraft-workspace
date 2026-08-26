@@ -209,6 +209,8 @@ public class ForgeBridgeMod {
         httpServer.createContext("/api/bot/say", new BotSayHandler());
         httpServer.createContext("/api/bot/action", new BotActionHandler());
         httpServer.createContext("/api/bot/equip", new BotEquipHandler());
+        httpServer.createContext("/api/bot/inventory", new BotInventoryHandler());
+        httpServer.createContext("/api/bot/drop", new BotDropHandler());
         httpServer.createContext("/api/bot/navigate", new BotNavigateHandler());
         httpServer.createContext("/api/bot/nav_status", new BotNavStatusHandler());
         httpServer.createContext("/api/bot/stop_move", new BotStopMoveHandler());
@@ -714,6 +716,30 @@ public class ForgeBridgeMod {
             String slot = extractJsonField(body, "slot");
             String itemId = extractJsonField(body, "item");
             String res = FakePlayerManager.getInstance().equip(slot, itemId);
+            if (!"ok".equals(res)) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + res + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true}");
+        }
+    }
+
+    private class BotInventoryHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String json = FakePlayerManager.getInstance().getInventoryJson();
+            sendJsonResponse(exchange, 200, json);
+        }
+    }
+
+    private class BotDropHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String body = readBody(exchange);
+            int slot = -1;
+            int count = 1;
+            try { slot = Integer.parseInt(extractJsonField(body, "slot")); } catch (Exception ignored) {}
+            try { count = Integer.parseInt(extractJsonField(body, "count")); } catch (Exception ignored) {}
+            String res = FakePlayerManager.getInstance().dropItem(slot, count);
             if (!"ok".equals(res)) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + res + "\"}");
             else sendJsonResponse(exchange, 200, "{\"ok\": true}");
         }

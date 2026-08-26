@@ -364,6 +364,59 @@ class MinecraftWorkspace(Workspace):
                 return await self._append_hud_if_enabled(f"Bot performed action: {action}")
 
     @tool(
+        "minecraft.bot.inventory",
+        description="Inspect the bot's inventory items, equipped armor, and held items",
+        arguments={},
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_inventory(self, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/inventory"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=self._get_headers()) as resp:
+                data = await resp.json()
+                res_str = json.dumps(data, indent=2, ensure_ascii=False)
+                return await self._append_hud_if_enabled(res_str)
+
+    @tool(
+        "minecraft.bot.equip",
+        description="Equip an item into bot armor slot or main/offhand with live visual broadcast",
+        arguments={
+            "slot": {"type": "string", "description": "Slot name: 'mainhand', 'offhand', 'head', 'chest', 'legs', 'feet'"},
+            "item": {"type": "string", "description": "Item ResourceLocation e.g. 'minecraft:netherite_sword', 'minecraft:diamond_chestplate', or 'air'"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_equip(self, slot: str, item: str, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/equip"
+        payload = {"slot": slot, "item": item}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "equip failed"))
+                return await self._append_hud_if_enabled(f"Bot equipped {item} in slot {slot}")
+
+    @tool(
+        "minecraft.bot.drop",
+        description="Drop an item from the bot's inventory onto the ground in front of it",
+        arguments={
+            "slot": {"type": "integer", "description": "Inventory slot index (0-35), or -1 for current mainhand item", "default": -1},
+            "count": {"type": "integer", "description": "Number of items to drop (default: 1)", "default": 1}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_drop(self, slot: int = -1, count: int = 1, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/drop"
+        payload = {"slot": str(slot), "count": str(count)}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "drop failed"))
+                return await self._append_hud_if_enabled(f"Bot dropped item (slot: {slot}, count: {count})")
+
+    @tool(
         "minecraft.bot.look_at",
         description="Rotate the bot's head to look at coordinates or set explicit yaw/pitch angles",
         arguments={
