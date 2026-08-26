@@ -20,13 +20,14 @@ Write only what is useful for implementation, review, maintenance, and AI execut
 Native Minecraft Server Workspace and bridge ecosystem for the UnAI runtime. Allows autonomous AI agents to interact with running Minecraft servers (Paper/Spigot and Forge) via standard MCP tools.
 
 ### Core goal
-Enable AI agents to exist in the Minecraft world as full-featured virtual player entities: navigate via 3D A* pathfinding, observe the world via 3D ASCII first-person projection and 2D dynamic rotated radars, buffer perception frames for autonomous decision-making (e.g. noticing caves/ores while walking and interrupting paths), customize appearance/skins, receive contextual in-band HUD overlays (chat/vitals/custom watches piggybacked onto tool responses), execute commands, and interact with players and blocks.
+Enable AI agents to exist in the Minecraft world as full-featured virtual player entities: navigate via 3D A* pathfinding, store and navigate persistent spatial waypoints (`minecraft.locations`), observe the world via 3D ASCII first-person projection and 2D dynamic rotated radars, buffer perception frames for autonomous decision-making (e.g. noticing caves/ores while walking and interrupting paths), customize appearance/skins, receive contextual in-band HUD overlays (chat/vitals/custom watches piggybacked onto tool responses), execute commands, and interact with players and blocks.
 
 ### Success criteria
 - Multi-platform server bridges (Paper plugin + Forge 1.21.1 mod) with identical REST API.
 - Zero external runtime dependencies on server side (pure Java `com.sun.net.httpserver.HttpServer`).
 - Virtual `ServerPlayer` entity with client packet synchronization (tab list, 3D model, animations, inventory, skin).
-- Modular In-Band HUD & Telemetry (ADR-0005): Every tool response automatically carries unread in-game chat messages, vitals, and user-configured watch modules (radar, target, inventory, POI) without extra polling calls.
+- Persistent Spatial Memory Layer (`minecraft.locations`): Saved named waypoints (home, mine, village, portals) with auto-distance sorting and instant `goto` navigation.
+- Modular In-Band HUD & Telemetry (ADR-0005): Every tool response automatically carries unread in-game chat messages, vitals, and user-configured watch modules without extra polling calls.
 - Dynamic Skin System:
   - Default baked-in author skin (`skinunai.png` cosmic void) bundled directly in mod resources.
   - Runtime custom skin support via player nickname (Mojang Session Server property), Mineskin/URL, or local PNG file.
@@ -48,7 +49,7 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 
 ### Status summary
 - v1.0.0 (Core Server REST Bridge, Chat Events, Unicode Fix) - COMPLETE & DEPLOYED.
-- v1.1.0 (Fake Player Avatar, Skin System, Modular HUD Telemetry, KasHub A* Pathfinding, 3D ASCII & Rotated 2D Perception, 60-Frame Ring Buffer) - COMPLETE & DEPLOYED LIVE.
+- v1.1.0 (Fake Player Avatar, Skin System, Modular HUD Telemetry, KasHub A* Pathfinding, 3D ASCII & Rotated 2D Perception, Spatial Waypoint Memory Layer) - COMPLETE & DEPLOYED LIVE.
 
 ### Implemented
 - [x] Architecture & protocol design
@@ -63,6 +64,7 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 - [x] 2D Heading-Rotated Dynamic Radar (`bot.radar`) with line-of-sight wall occlusion (`?`) and 8-way gaze arrows
 - [x] Crosshair Raycast Target Inspector (`bot.target`)
 - [x] 60-Frame Perception Ring Buffer (`bot.frames`)
+- [x] Persistent Spatial Memory Layer (`minecraft.locations.set/get/list/remove/goto`) stored in `~/.unai/data/minecraft/locations.json`
 - [x] In-Band Modular HUD & Piggyback Telemetry (ADR-0005) with unread chat auto-delivery
 - [x] Built and deployed `unai-bridge-forge-1.21.1-1.0.0.jar` to Frankfurt server (`nodefrankfurt.kasperstudios.xyz`)
 - [x] Verified end-to-end via Python Minecraft Workspace test runner
@@ -76,6 +78,7 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 - Language(s): Python / Java
 - Platform(s): Forge 1.21.1 / Paper & Spigot
 - HTTP Server: Built-in JDK `com.sun.net.httpserver.HttpServer`
+- Storage: JSON-backed persistent data (`session.json`, `locations.json`, `hud_config.json`) in `~/.unai/data/minecraft/`
 - Build tools: Gradle 8.10+
 
 ### Versions
@@ -87,25 +90,19 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 
 ## 4. Architecture & Perception Pipeline
 
-### Perception & Navigation Workflow
+### Spatial Memory Tree (`minecraft.locations`)
+Saved persistent waypoints in `~/.unai/data/minecraft/locations.json`:
 ```txt
-[ Agent Goal: Walk to X:100 Z:200 ]
-               │
-               ▼
-[ Start A* Pathfinding ] ──> [ Mod Ticks Movement (KasHub A*) ]
-                                       │
-                     ┌─────────────────┴─────────────────┐
-                     ▼                                   ▼
-        [ Capture Visual Frame ]              [ POI Raycast Checks ]
-        (Depth / 3D ASCII / Radar)            (Caves, Ores, Players)
-                     │                                   │
-                     ▼                                   ▼
-        [ 60-Frame Ring Buffer ]              [ If POI detected: Emit Alert ]
-        (5 FPS playback timeline)                        │
-                     │                                   ▼
-                     └─────────────────> [ Agent inspects frame & halts path ]
-                                         [ Agent reroutes into Cave/Objective ]
+minecraft.locations
+├── home           [-272.0, 60.0, 265.0]  (base, spawn)
+├── mine           [-250.0, 45.0, 290.0]  (resources, mine)
+├── village        [-120.0, 64.0, 500.0]  (trading)
+├── nether_portal  [-280.0, 62.0, 250.0]  (portal)
+└── friend_base    [-410.0, 68.0, 115.0]  (crow, kasper)
 ```
+- Auto-detected coordinates if omitted on `locations.set(name)`.
+- Real-time distance calculation relative to live bot position on `locations.list()` and `locations.get()`.
+- Instant one-step travel via `locations.goto(name)`.
 
 ### In-Band Tool HUD (ADR-0005)
 Every tool output automatically carries unread in-game chat messages, vitals, and navigation state.
@@ -127,4 +124,5 @@ Tested on `nodefrankfurt.kasperstudios.xyz`:
 4. `bot.target`: Returned `{type: "block", id: "minecraft:emerald_block", dist: 4.0, x: -272, y: 61, z: 269}`.
 5. `bot.action`: Executed `sneak` and rotation update.
 6. `bot.say`: Broadcast in-game message `<DiromPrime> Тест зрения, 3D A* и HUD пройден успешно!`.
-7. `HUD`: Confirmed automatic attachment of unread chat and vitals to tool results without dedicated polling calls.
+7. `locations.*`: Saved `home`, `mine`, `nether_portal`, computed live Euclidean distance from bot, and executed `locations.goto('home')`.
+8. `HUD`: Confirmed automatic attachment of unread chat and vitals to tool results without dedicated polling calls.
