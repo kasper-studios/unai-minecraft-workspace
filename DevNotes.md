@@ -70,6 +70,7 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 - [x] Full 3D Skin Layer Customization (`DATA_PLAYER_MODE_CUSTOMISATION = 127`)
 - [x] Realistic Player Knockback & Melee Weapon Attack Physics (3.5m reach check)
 - [x] Native Inventory Tools (`bot.inventory`, `bot.equip`, `bot.drop` with visual 3D packet sync)
+- [x] Full Inventory & Survival System (`bot.select_slot`, `bot.swap_slots`, `bot.use_item`, `bot.clear_inventory`, `bot.craft`, `bot.break_block`, `bot.find_blocks`, automatic ground pickup)
 - [x] Built and deployed `unai-bridge-forge-1.21.1-1.0.0.jar` to Frankfurt server (`nodefrankfurt.kasperstudios.xyz`)
 - [x] Verified end-to-end via Python Minecraft Workspace test runner
 
