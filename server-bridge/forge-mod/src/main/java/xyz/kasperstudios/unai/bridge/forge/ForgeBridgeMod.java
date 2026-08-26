@@ -215,6 +215,7 @@ public class ForgeBridgeMod {
         httpServer.createContext("/api/bot/radar", new BotRadarHandler());
         httpServer.createContext("/api/bot/target", new BotTargetHandler());
         httpServer.createContext("/api/bot/frames", new BotFramesHandler());
+        httpServer.createContext("/api/bot/hud", new BotHudHandler());
 
         httpServer.start();
     }
@@ -868,6 +869,31 @@ public class ForgeBridgeMod {
         public void handle(HttpExchange exchange) throws IOException {
             if (!checkAuth(exchange)) return;
             sendJsonResponse(exchange, 200, "{\"ok\": true, \"status\": " + FakePlayerManager.getInstance().statusJson() + "}");
+        }
+    }
+
+    private class BotHudHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+
+            List<String> unreadList = new ArrayList<>();
+            for (ChatEventItem item : eventHistory) {
+                if (!item.read) {
+                    unreadList.add(formatEventJson(item));
+                    item.read = true;
+                    if (unreadList.size() >= 5) break;
+                }
+            }
+
+            ServerPlayer bot = FakePlayerManager.getInstance().getBot();
+            String status = FakePlayerManager.getInstance().statusJson();
+            String target = (bot != null) ? PerceptionEngine.getInstance().getTargetJson(bot) : "{\"type\":\"none\"}";
+
+            String json = String.format("{\"ok\":true,\"unread_chat\":[%s],\"status\":%s,\"target\":%s}",
+                    String.join(",", unreadList), status, target);
+
+            sendJsonResponse(exchange, 200, json);
         }
     }
 }

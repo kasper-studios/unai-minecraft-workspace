@@ -89,16 +89,24 @@ class MinecraftWorkspace(Workspace):
 
         hud_sections = []
         try:
-            # 1. Fetch unread chat
-            if "chat" in self._hud_modules:
-                url_feed = f"{self._base_url}/api/notifications/feed?unread_only=true&limit=5"
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
-                    async with session.get(url_feed, headers=self._get_headers()) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            notifications = data.get("notifications", [])
+            url_hud = f"{self._base_url}/api/bot/hud"
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2)) as session:
+                async with session.get(url_hud, headers=self._get_headers()) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        st = data.get("status", {})
+                        if st.get("spawned") and any(m in self._hud_modules for m in ["vitals", "position", "target"]):
+                            hp = st.get("health", 20.0)
+                            hunger = st.get("hunger", 20)
+                            x, y, z = st.get("x", 0.0), st.get("y", 0.0), st.get("z", 0.0)
+                            yaw, pitch = st.get("yaw", 0.0), st.get("pitch", 0.0)
+                            nav = st.get("nav_status", "IDLE")
+                            hud_sections.append(f"HUD [HP: {hp:.1f}/20 | Food: {hunger}/20 | Pos: {x:.1f}, {y:.1f}, {z:.1f} | Yaw: {yaw:.1f}° | Nav: {nav}]")
+
+                        if "chat" in self._hud_modules:
+                            unread = data.get("unread_chat", [])
                             chat_lines = []
-                            for n in notifications:
+                            for n in unread:
                                 sender = n.get("sender", "Unknown")
                                 msg = n.get("message", "")
                                 ntype = n.get("type", "chat")
@@ -108,22 +116,6 @@ class MinecraftWorkspace(Workspace):
                                     chat_lines.append(f"[{ntype.upper()}] {msg}")
                             if chat_lines:
                                 hud_sections.append("[NEW IN-GAME CHAT]:\n  " + "\n  ".join(chat_lines))
-
-            # 2. Fetch bot status vitals
-            if any(m in self._hud_modules for m in ["vitals", "position", "target"]):
-                url_stat = f"{self._base_url}/api/bot/status"
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
-                    async with session.get(url_stat, headers=self._get_headers()) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            st = data.get("status", {})
-                            if st.get("spawned"):
-                                hp = st.get("health", 20.0)
-                                hunger = st.get("hunger", 20)
-                                x, y, z = st.get("x", 0.0), st.get("y", 0.0), st.get("z", 0.0)
-                                yaw, pitch = st.get("yaw", 0.0), st.get("pitch", 0.0)
-                                nav = st.get("nav_status", "IDLE")
-                                hud_sections.insert(0, f"HUD [HP: {hp:.1f}/20 | Food: {hunger}/20 | Pos: {x:.1f}, {y:.1f}, {z:.1f} | Yaw: {yaw:.1f}° | Nav: {nav}]")
 
             if hud_sections:
                 hud_text = "\n────────────────────────────────────────────────────────────────\n" + "\n".join(hud_sections)
