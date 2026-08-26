@@ -115,11 +115,13 @@ public class FakePlayerManager {
         server.execute(() -> {
             try {
                 if (bot != null) {
+                    int oldId = bot.getId();
                     removeFromPlayerList(server.getPlayerList(), bot);
                     bot.discard();
                     try {
                         fLevel.removePlayerImmediately(bot, net.minecraft.world.entity.Entity.RemovalReason.DISCARDED);
                     } catch (Throwable ignored) {}
+                    server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket(oldId));
                 }
 
                 DummyConnection dummyConnection = new DummyConnection();
@@ -204,8 +206,15 @@ public class FakePlayerManager {
                 ClientboundPlayerInfoUpdatePacket tabPacket = new ClientboundPlayerInfoUpdatePacket(actions, List.of(bot));
                 server.getPlayerList().broadcastAll(tabPacket);
 
-                // Broadcast entity spawn and data to nearby players
-                server.getPlayerList().broadcastAll(new ClientboundAddEntityPacket(bot, 0, bot.blockPosition()));
+                // Broadcast exact entity spawn with double coordinates and head yaw
+                server.getPlayerList().broadcastAll(new ClientboundAddEntityPacket(
+                        bot.getId(), bot.getUUID(),
+                        bot.getX(), bot.getY(), bot.getZ(),
+                        bot.getXRot(), bot.getYRot(),
+                        bot.getType(), 0,
+                        bot.getDeltaMovement(),
+                        bot.getYHeadRot()
+                ));
                 if (bot.getEntityData().isDirty()) {
                     server.getPlayerList().broadcastAll(new ClientboundSetEntityDataPacket(bot.getId(), bot.getEntityData().packDirty()));
                 }
