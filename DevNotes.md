@@ -20,12 +20,13 @@ Write only what is useful for implementation, review, maintenance, and AI execut
 Native Minecraft Server Workspace and bridge ecosystem for the UnAI runtime. Allows autonomous AI agents to interact with running Minecraft servers (Paper/Spigot and Forge) via standard MCP tools.
 
 ### Core goal
-Enable AI agents to exist in the Minecraft world as full-featured virtual player entities: navigate via 3D A* pathfinding, observe the world via 3D ASCII first-person projection and 2D dynamic rotated radars, buffer perception frames for autonomous decision-making (e.g. noticing caves/ores while walking and interrupting paths), customize appearance/skins, execute commands, and interact with players and blocks.
+Enable AI agents to exist in the Minecraft world as full-featured virtual player entities: navigate via 3D A* pathfinding, observe the world via 3D ASCII first-person projection and 2D dynamic rotated radars, buffer perception frames for autonomous decision-making (e.g. noticing caves/ores while walking and interrupting paths), customize appearance/skins, receive contextual in-band HUD overlays (chat/vitals piggybacked onto tool responses), execute commands, and interact with players and blocks.
 
 ### Success criteria
 - Multi-platform server bridges (Paper plugin + Forge 1.21.1 mod) with identical REST API.
 - Zero external runtime dependencies on server side (pure Java `com.sun.net.httpserver.HttpServer`).
 - Virtual `ServerPlayer` entity with client packet synchronization (tab list, 3D model, animations, inventory, skin).
+- In-Band HUD & Unread Chat Piggybacking: Every tool response automatically carries unread in-game chat messages and vitals, eliminating polling token overhead.
 - Dynamic Skin System:
   - Default baked-in author skin bundled directly in mod resources.
   - Runtime custom skin support via player nickname (Mojang Session Server property), Mineskin/URL, or local PNG file.
@@ -47,7 +48,7 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 
 ### Status summary
 - v1.0.0 (Core Server REST Bridge, Chat Events, Unicode Fix) - COMPLETE & DEPLOYED.
-- v1.1.0 (Fake Player Avatar, Skin System, KasHub A* Pathfinding, 3D ASCII & Rotated 2D Perception, 60-Frame Ring Buffer) - IN ARCHITECTURE & PLANNING.
+- v1.1.0 (Fake Player Avatar, Skin System, HUD Telemetry, KasHub A* Pathfinding, 3D ASCII & Rotated 2D Perception, 60-Frame Ring Buffer) - IN ARCHITECTURE & PLANNING.
 
 ### Implemented (v1.0.0)
 - [x] Architecture & protocol design
@@ -61,8 +62,9 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 - [x] Deployed and active on Frankfurt server (`nodefrankfurt.kasperstudios.xyz`)
 - [x] Indexed in UnAI marketplace (`main/wsmarketplace/index.json`)
 
-### In progress (v1.1.0 Avatar, Skins & Perception Engine)
+### In progress (v1.1.0 Avatar, Skins, HUD & Perception Engine)
 - [ ] Virtual `ServerPlayer` (Fake Player) lifecycle & packet handling (`bot.spawn`, `bot.despawn`, `bot.say`, `bot.action`)
+- [ ] In-band Tool HUD: Automatic piggybacking of unread chat and player vitals on all tool outputs
 - [ ] Skin System: Default embedded author skin + custom Mojang nick / URL / file loader (`bot.skin_set`)
 - [ ] 3D A* Pathfinding engine integration from KasHub (`bot.move_to`, `bot.stop_move`, `bot.nav_status`)
 - [ ] 3D First-Person ASCII Raymarcher & 2D Dynamic Rotated Radar with LOS raycast
@@ -108,6 +110,15 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
                                          [ Agent reroutes into Cave/Objective ]
 ```
 
+### In-Band Tool HUD (Chat & Vitals Auto-Delivery)
+Whenever the agent executes any tool (`bot.move_to`, `bot.look_at`, `bot.action`, `bot.equip`, `command`), the response automatically appends a compact HUD block:
+```txt
+[Command Result: Walking towards X:100 Z:200]
+--- HUD [HP: 20/20 | Pos: -275, 60, 265 | Target: Crow5431 (4.2m)] ---
+[CHAT] <Crow5431> Диром, стой, тут пещера!
+```
+This guarantees zero wasted tool calls on dedicated chat-polling loops.
+
 ### Skin System Specification
 - **Default Skin:** Embedded directly in mod resources (`assets/unai_bridge/textures/entity/skin_default.png` / Base64 property). Rendered automatically when no custom skin is provided.
 - **Custom Skin Loading:**
@@ -123,6 +134,7 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
    - `minecraft.bot.say(message)`
    - `minecraft.bot.action(action)` (sneak, swing, jump)
    - `minecraft.bot.equip(mainhand, armor)`
+   - `minecraft.bot.config(hud_enabled=True)`
 2. **Pathfinding & Movement:**
    - `minecraft.bot.move_to(x, y, z, target, radius)`
    - `minecraft.bot.stop_move()`
