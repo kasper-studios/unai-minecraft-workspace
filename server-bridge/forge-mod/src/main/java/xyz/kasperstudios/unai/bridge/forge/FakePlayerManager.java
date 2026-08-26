@@ -11,8 +11,10 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.network.protocol.game.ClientboundAnimatePacket;
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket;
+import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -20,7 +22,10 @@ import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.server.players.PlayerList;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.MoverType;
+import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
@@ -35,6 +40,7 @@ import java.util.*;
  * Features:
  * - Offline-mode fake player entity with custom skin injection & full 3D layer visibility
  * - Full TabList synchronization via PlayerList injection & ClientboundPlayerInfoUpdatePacket
+ * - Real in-world physics (gravity, jump arcs, damage red flash, knockback, crouching)
  * - 3D A* Pathfinding (KasHub engine) with jump and obstacle navigation
  * - Perception Engine (3D ASCII View, 2D POV Radar, Crosshair Target, 60-Frame Ring Buffer)
  */
@@ -57,7 +63,7 @@ public class FakePlayerManager {
 
     private Vec3 lastPos = null;
     private int stuckTicks = 0;
-    private static final int STUCK_THRESHOLD = 30; // 1.5 seconds
+    private static final int STUCK_THRESHOLD = 30;
 
     private float targetYaw = Float.NaN;
     private float targetPitch = Float.NaN;
@@ -115,6 +121,28 @@ public class FakePlayerManager {
                     public boolean isSpectator() { return false; }
                     @Override
                     public boolean isCreative() { return false; }
+                    @Override
+                    public boolean isInvulnerable() { return false; }
+                    @Override
+                    public boolean isInvulnerableTo(DamageSource source) { return false; }
+                    @Override
+                    public boolean isAttackable() { return true; }
+                    @Override
+                    public boolean hurt(DamageSource src, float amount) {
+                        boolean res = super.hurt(src, amount);
+                        // Red damage flash animation to all clients
+                        server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(this, 1));
+                        if (src.getEntity() != null) {
+                            double dx = this.getX() - src.getEntity().getX();
+                            double dz = this.getZ() - src.getEntity().getZ();
+                            double dist = Math.max(0.1, Math.sqrt(dx * dx + dz * dz));
+                            this.setDeltaMovement(dx / dist * 0.40, 0.32, dz / dist * 0.40);
+                            this.hurtMarked = true;
+                            this.hasImpulse = true;
+                            server.getPlayerList().broadcastAll(new ClientboundSetEntityMotionPacket(this));
+                        }
+                        return res;
+                    }
                 };
 
                 CommonListenerCookie cookie = CommonListenerCookie.createInitial(fProfile, false);
@@ -168,6 +196,9 @@ public class FakePlayerManager {
                     server.getPlayerList().broadcastAll(new ClientboundSetEntityDataPacket(bot.getId(), bot.getEntityData().packDirty()));
                 }
 
+                // In-game join message
+                server.getPlayerList().broadcastSystemMessage(Component.literal("§e" + fName + " joined the game"), false);
+
                 LOGGER.info("[UnAI-Bridge] Fake player '{}' spawned at {}, {}, {} and registered in TabList", fName, fx, fy, fz);
             } catch (Throwable t) {
                 LOGGER.error("[UnAI-Bridge] Spawn failed", t);
@@ -189,7 +220,6 @@ public class FakePlayerManager {
                 Object val = f.get(playerList);
                 if (val instanceof List) {
                     List<?> list = (List<?>) val;
-                    // Check if it's the players list (either empty or contains ServerPlayers)
                     if (list.isEmpty() || list.get(0) instanceof ServerPlayer) {
                         List<ServerPlayer> playerListCast = (List<ServerPlayer>) list;
                         if (!playerListCast.contains(player)) {
@@ -198,7 +228,6 @@ public class FakePlayerManager {
                     }
                 } else if (val instanceof Map) {
                     Map<?, ?> map = (Map<?, ?>) val;
-                    // Only target maps whose values are ServerPlayer (playersByUUID), NOT ServerStatsCounter or PlayerAdvancements!
                     if (!map.isEmpty()) {
                         Object firstVal = map.values().iterator().next();
                         if (firstVal instanceof ServerPlayer) {
@@ -245,9 +274,6 @@ public class FakePlayerManager {
         }
     }
 
-    /**
-     * Called when a player joins to ensure they get the bot in their TabList.
-     */
     public void onPlayerJoin(ServerPlayer joiningPlayer) {
         if (bot != null && !bot.isRemoved() && joiningPlayer != null) {
             try {
@@ -335,8 +361,10 @@ public class FakePlayerManager {
     public synchronized String despawn() {
         if (bot == null) return "not_spawned";
         final ServerPlayer b = bot;
+        final String fName = b.getName().getString();
         server.execute(() -> {
             try {
+                server.getPlayerList().broadcastSystemMessage(Component.literal("§e" + fName + " left the game"), false);
                 removeFromPlayerList(server.getPlayerList(), b);
                 b.discard();
                 server.getPlayerList().remove(b);
@@ -364,16 +392,16 @@ public class FakePlayerManager {
                 bot.setDeltaMovement(bot.getDeltaMovement().x, 0.48, bot.getDeltaMovement().z);
                 bot.hasImpulse = true;
                 bot.hurtMarked = true;
-                server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket(bot));
+                server.getPlayerList().broadcastAll(new ClientboundSetEntityMotionPacket(bot));
             });
             case "swing" -> server.execute(() -> {
                 bot.swing(InteractionHand.MAIN_HAND, true);
-                server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundAnimatePacket(bot, 0));
+                server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(bot, 0));
             });
             case "sneak" -> server.execute(() -> {
                 boolean nextShift = !bot.isShiftKeyDown();
                 bot.setShiftKeyDown(nextShift);
-                bot.setPose(nextShift ? net.minecraft.world.entity.Pose.CROUCHING : net.minecraft.world.entity.Pose.STANDING);
+                bot.setPose(nextShift ? Pose.CROUCHING : Pose.STANDING);
                 if (bot.getEntityData().isDirty()) {
                     server.getPlayerList().broadcastAll(new ClientboundSetEntityDataPacket(bot.getId(), bot.getEntityData().packDirty()));
                 }
@@ -460,7 +488,7 @@ public class FakePlayerManager {
     }
 
     /**
-     * Called on each server tick to process navigation and perception.
+     * Called on each server tick to process navigation, physics and perception.
      */
     public void tick() {
         if (bot == null || bot.isRemoved()) {
@@ -489,6 +517,20 @@ public class FakePlayerManager {
             float next = cur + step;
             if (Math.abs(diff) < 0.5f) { next = targetPitch; targetPitch = Float.NaN; }
             bot.setXRot(next);
+        }
+
+        // Apply physical movement and gravity tick
+        Vec3 dm = bot.getDeltaMovement();
+        if (!bot.onGround() || dm.y > 0 || Math.abs(dm.x) > 0.001 || Math.abs(dm.z) > 0.001) {
+            bot.move(MoverType.SELF, dm);
+            double newY = dm.y;
+            if (!bot.onGround()) {
+                newY = (newY - 0.08) * 0.98; // Gravity & air drag
+            } else if (newY < 0) {
+                newY = 0;
+            }
+            bot.setDeltaMovement(dm.x * 0.85, newY, dm.z * 0.85);
+            bot.hurtMarked = true;
         }
 
         // A* Path execution
@@ -541,12 +583,13 @@ public class FakePlayerManager {
 
             double hDist = Math.sqrt(horizontalDistSq);
             if (hDist > 0.01) {
-                double speed = 0.28; // ~5.6 blocks/second sprint
+                double speed = 0.28;
                 Vec3 vel = new Vec3(dx / hDist * speed, bot.getDeltaMovement().y, dz / hDist * speed);
 
                 // Jump if step up
                 if (dy > 0.5 && bot.onGround()) {
-                    bot.jumpFromGround();
+                    vel = new Vec3(vel.x, 0.45, vel.z);
+                    server.getPlayerList().broadcastAll(new ClientboundSetEntityMotionPacket(bot));
                 }
 
                 bot.setDeltaMovement(vel);

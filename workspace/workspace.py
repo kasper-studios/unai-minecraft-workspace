@@ -128,10 +128,16 @@ class MinecraftWorkspace(Workspace):
                                 sender = n.get("sender", "Unknown")
                                 msg = n.get("message", "")
                                 ntype = n.get("type", "chat")
-                                if ntype == "chat":
+                                if ntype in ("chat", "chat_out"):
                                     chat_lines.append(f"<{sender}> {msg}")
+                                elif ntype == "join":
+                                    chat_lines.append(f"-> {sender} joined the game")
+                                elif ntype == "leave":
+                                    chat_lines.append(f"<- {sender} left the game")
+                                elif ntype == "death":
+                                    chat_lines.append(f"[DEATH] {msg}")
                                 else:
-                                    chat_lines.append(f"[{ntype.upper()}] {msg}")
+                                    chat_lines.append(f"[{sender}]: {msg}")
                             if chat_lines:
                                 hud_sections.append("[NEW IN-GAME CHAT]:\n  " + "\n  ".join(chat_lines))
 
