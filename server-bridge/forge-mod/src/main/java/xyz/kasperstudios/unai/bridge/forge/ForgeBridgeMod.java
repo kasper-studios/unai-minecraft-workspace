@@ -216,6 +216,8 @@ public class ForgeBridgeMod {
         httpServer.createContext("/api/bot/use_item", new BotUseItemHandler());
         httpServer.createContext("/api/bot/clear_inventory", new BotClearInventoryHandler());
         httpServer.createContext("/api/bot/craft", new BotCraftHandler());
+        httpServer.createContext("/api/bot/break_block", new BotBreakBlockHandler());
+        httpServer.createContext("/api/bot/find_blocks", new BotFindBlocksHandler());
         httpServer.createContext("/api/bot/navigate", new BotNavigateHandler());
         httpServer.createContext("/api/bot/nav_status", new BotNavStatusHandler());
         httpServer.createContext("/api/bot/stop_move", new BotStopMoveHandler());
@@ -809,6 +811,34 @@ public class ForgeBridgeMod {
             String res = FakePlayerManager.getInstance().craft(recipe);
             if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
             else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
+        }
+    }
+
+    private class BotBreakBlockHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String body = readBody(exchange);
+            int x = 0, y = 0, z = 0;
+            try { x = Integer.parseInt(extractJsonField(body, "x")); } catch (Exception ignored) {}
+            try { y = Integer.parseInt(extractJsonField(body, "y")); } catch (Exception ignored) {}
+            try { z = Integer.parseInt(extractJsonField(body, "z")); } catch (Exception ignored) {}
+            String res = FakePlayerManager.getInstance().breakBlock(x, y, z);
+            if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
+        }
+    }
+
+    private class BotFindBlocksHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String body = readBody(exchange);
+            String query = extractJsonField(body, "query");
+            int radius = 16;
+            try { radius = Integer.parseInt(extractJsonField(body, "radius")); } catch (Exception ignored) {}
+            String json = FakePlayerManager.getInstance().findBlocksJson(query, radius);
+            sendJsonResponse(exchange, 200, json);
         }
     }
 

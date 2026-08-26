@@ -506,6 +506,46 @@ class MinecraftWorkspace(Workspace):
                 return await self._append_hud_if_enabled(f"Bot crafting result: {msg}")
 
     @tool(
+        "minecraft.bot.break_block",
+        description="Break or mine a block at specified world coordinates (within reach)",
+        arguments={
+            "x": {"type": "integer", "description": "Block X coordinate"},
+            "y": {"type": "integer", "description": "Block Y coordinate"},
+            "z": {"type": "integer", "description": "Block Z coordinate"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_break_block(self, x: int, y: int, z: int, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/break_block"
+        payload = {"x": str(x), "y": str(y), "z": str(z)}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "break block failed"))
+                msg = data.get("message", "Mined")
+                return await self._append_hud_if_enabled(f"Bot mined block: {msg}")
+
+    @tool(
+        "minecraft.bot.find_blocks",
+        description="Scan nearby area around the bot to find specific blocks (e.g. 'log', 'ore', 'table', 'dirt')",
+        arguments={
+            "query": {"type": "string", "description": "Filter substring e.g. 'log', 'wood', 'ore', 'leaves', 'stone'", "default": ""},
+            "radius": {"type": "integer", "description": "Search radius in blocks (1-24, default: 16)", "default": 16}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_find_blocks(self, query: str = "", radius: int = 16, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/find_blocks"
+        payload = {"query": query, "radius": str(radius)}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                res_str = json.dumps(data, indent=2, ensure_ascii=False)
+                return await self._append_hud_if_enabled(res_str)
+
+    @tool(
         "minecraft.bot.look_at",
         description="Rotate the bot's head to look at coordinates or set explicit yaw/pitch angles",
         arguments={
