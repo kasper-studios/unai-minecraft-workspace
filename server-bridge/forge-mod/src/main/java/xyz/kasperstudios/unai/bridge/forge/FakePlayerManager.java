@@ -28,6 +28,7 @@ import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 
@@ -139,7 +140,11 @@ public class FakePlayerManager {
                     public boolean isAttackable() { return true; }
                     @Override
                     public void knockback(double strength, double x, double z) {
-                        super.knockback(strength, x, z);
+                        double len = Math.max(0.001, Math.sqrt(x * x + z * z));
+                        Vec3 cur = this.getDeltaMovement();
+                        double kx = (x / len) * strength;
+                        double kz = (z / len) * strength;
+                        this.setDeltaMovement(cur.x / 2.0 - kx, this.onGround() ? Math.min(0.45, cur.y / 2.0 + 0.38) : cur.y + 0.2, cur.z / 2.0 - kz);
                         this.hurtMarked = true;
                         this.hasImpulse = true;
                         server.getPlayerList().broadcastAll(new ClientboundSetEntityMotionPacket(this));
@@ -152,7 +157,7 @@ public class FakePlayerManager {
                             double dx = this.getX() - src.getEntity().getX();
                             double dz = this.getZ() - src.getEntity().getZ();
                             double dist = Math.max(0.1, Math.sqrt(dx * dx + dz * dz));
-                            this.setDeltaMovement(dx / dist * 0.55, 0.40, dz / dist * 0.55);
+                            this.setDeltaMovement(dx / dist * 0.52, 0.40, dz / dist * 0.52);
                             this.hurtMarked = true;
                             this.hasImpulse = true;
                             server.getPlayerList().broadcastAll(new ClientboundSetEntityMotionPacket(this));
@@ -417,9 +422,25 @@ public class FakePlayerManager {
                 bot.hurtMarked = true;
                 server.getPlayerList().broadcastAll(new ClientboundSetEntityMotionPacket(bot));
             });
-            case "swing" -> server.execute(() -> {
+            case "swing", "attack" -> server.execute(() -> {
                 bot.swing(InteractionHand.MAIN_HAND, true);
                 server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(bot, 0));
+
+                // Perform real melee attack on entity in front of crosshairs
+                try {
+                    Vec3 eyePos = bot.getEyePosition();
+                    Vec3 lookVec = bot.getViewVector(1.0f);
+                    Vec3 reachVec = eyePos.add(lookVec.scale(4.0));
+                    AABB box = bot.getBoundingBox().expandTowards(lookVec.scale(4.0)).inflate(1.5);
+                    var hit = net.minecraft.world.entity.projectile.ProjectileUtil.getEntityHitResult(
+                            bot.serverLevel(), bot, eyePos, reachVec, box, e -> !e.isSpectator() && e.isPickable() && e != bot
+                    );
+                    if (hit != null && hit.getEntity() != null) {
+                        bot.attack(hit.getEntity());
+                    }
+                } catch (Throwable t) {
+                    LOGGER.warn("[UnAI-Bridge] Attack error: " + t.getMessage());
+                }
             });
             case "sneak" -> server.execute(() -> {
                 boolean nextShift = !bot.isShiftKeyDown();
