@@ -20,12 +20,15 @@ Write only what is useful for implementation, review, maintenance, and AI execut
 Native Minecraft Server Workspace and bridge ecosystem for the UnAI runtime. Allows autonomous AI agents to interact with running Minecraft servers (Paper/Spigot and Forge) via standard MCP tools.
 
 ### Core goal
-Enable AI agents to exist in the Minecraft world as full-featured virtual player entities: navigate via 3D A* pathfinding, observe the world via 3D ASCII first-person projection and 2D dynamic rotated radars, buffer perception frames for autonomous decision-making (e.g. noticing caves/ores while walking and interrupting paths), execute commands, and interact with players and blocks.
+Enable AI agents to exist in the Minecraft world as full-featured virtual player entities: navigate via 3D A* pathfinding, observe the world via 3D ASCII first-person projection and 2D dynamic rotated radars, buffer perception frames for autonomous decision-making (e.g. noticing caves/ores while walking and interrupting paths), customize appearance/skins, execute commands, and interact with players and blocks.
 
 ### Success criteria
 - Multi-platform server bridges (Paper plugin + Forge 1.21.1 mod) with identical REST API.
 - Zero external runtime dependencies on server side (pure Java `com.sun.net.httpserver.HttpServer`).
 - Virtual `ServerPlayer` entity with client packet synchronization (tab list, 3D model, animations, inventory, skin).
+- Dynamic Skin System:
+  - Default baked-in author skin bundled directly in mod resources.
+  - Runtime custom skin support via player nickname (Mojang Session Server property), Mineskin/URL, or local PNG file.
 - 3D A* Pathfinding adapted from KasHub engine (obstacles, jump clearances, ladders, swimming, danger avoidance, stuck detection).
 - Perception Engine:
   - 3D First-Person ASCII raymarching view (`view_ascii`) with depth shading and entity detection.
@@ -44,7 +47,7 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 
 ### Status summary
 - v1.0.0 (Core Server REST Bridge, Chat Events, Unicode Fix) - COMPLETE & DEPLOYED.
-- v1.1.0 (Fake Player Avatar, KasHub A* Pathfinding, 3D ASCII & Rotated 2D Perception, 60-Frame Ring Buffer) - IN ARCHITECTURE & PLANNING.
+- v1.1.0 (Fake Player Avatar, Skin System, KasHub A* Pathfinding, 3D ASCII & Rotated 2D Perception, 60-Frame Ring Buffer) - IN ARCHITECTURE & PLANNING.
 
 ### Implemented (v1.0.0)
 - [x] Architecture & protocol design
@@ -58,8 +61,9 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 - [x] Deployed and active on Frankfurt server (`nodefrankfurt.kasperstudios.xyz`)
 - [x] Indexed in UnAI marketplace (`main/wsmarketplace/index.json`)
 
-### In progress (v1.1.0 Avatar & Perception Engine)
+### In progress (v1.1.0 Avatar, Skins & Perception Engine)
 - [ ] Virtual `ServerPlayer` (Fake Player) lifecycle & packet handling (`bot.spawn`, `bot.despawn`, `bot.say`, `bot.action`)
+- [ ] Skin System: Default embedded author skin + custom Mojang nick / URL / file loader (`bot.skin_set`)
 - [ ] 3D A* Pathfinding engine integration from KasHub (`bot.move_to`, `bot.stop_move`, `bot.nav_status`)
 - [ ] 3D First-Person ASCII Raymarcher & 2D Dynamic Rotated Radar with LOS raycast
 - [ ] 60-Frame ring buffer with ~5 FPS timeline query & POI event notifications
@@ -104,10 +108,18 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
                                          [ Agent reroutes into Cave/Objective ]
 ```
 
+### Skin System Specification
+- **Default Skin:** Embedded directly in mod resources (`assets/unai_bridge/textures/entity/skin_default.png` / Base64 property). Rendered automatically when no custom skin is provided.
+- **Custom Skin Loading:**
+  1. `skin_name`: A Minecraft player nickname (e.g. `kasperenok`, `Crow5431`). Bridge fetches official textures property from Mojang Session Server.
+  2. `skin_url` / `skin_file`: Custom PNG texture URL or local path processed via Mineskin / textures payload.
+- Injected directly into the fake player's `GameProfile.getProperties().put("textures", ...)` and synchronized to clients via `ClientboundPlayerInfoUpdatePacket`.
+
 ### Planned MCP Tools (v1.1.0)
 1. **Lifecycle & Avatar:**
-   - `minecraft.bot.spawn(name, x, y, z, target_player)`
+   - `minecraft.bot.spawn(name, x, y, z, target_player, skin)`
    - `minecraft.bot.despawn()`
+   - `minecraft.bot.skin_set(skin)` (Mojang nick, URL, local file, or "default")
    - `minecraft.bot.say(message)`
    - `minecraft.bot.action(action)` (sneak, swing, jump)
    - `minecraft.bot.equip(mainhand, armor)`
