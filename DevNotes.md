@@ -20,14 +20,18 @@ Write only what is useful for implementation, review, maintenance, and AI execut
 Native Minecraft Server Workspace and bridge ecosystem for the UnAI runtime. Allows autonomous AI agents to interact with running Minecraft servers (Paper/Spigot and Forge) via standard MCP tools.
 
 ### Core goal
-Enable AI agents to execute console commands, broadcast chat messages, inspect real-time server health (TPS, memory, uptime), observe player activity, and receive in-game chat notifications/events.
+Enable AI agents to exist in the Minecraft world as full-featured virtual player entities: navigate via 3D A* pathfinding, observe the world via 3D ASCII first-person projection and 2D dynamic rotated radars, buffer perception frames for autonomous decision-making (e.g. noticing caves/ores while walking and interrupting paths), execute commands, and interact with players and blocks.
 
 ### Success criteria
-- Functional UnAI Python workspace registering `@tool` methods (`minecraft.connect`, `minecraft.command`, `minecraft.chat`, `minecraft.status`, `minecraft.players`, `minecraft.messages_history`, `minecraft.notifications_feed`, `minecraft.notifications_clear`, `minecraft.disconnect`).
 - Multi-platform server bridges (Paper plugin + Forge 1.21.1 mod) with identical REST API.
 - Zero external runtime dependencies on server side (pure Java `com.sun.net.httpserver.HttpServer`).
-- Secure auto-generated API key on first startup with console notice.
-- Seamless installation via `unai workspace install minecraft`.
+- Virtual `ServerPlayer` entity with client packet synchronization (tab list, 3D model, animations, inventory, skin).
+- 3D A* Pathfinding adapted from KasHub engine (obstacles, jump clearances, ladders, swimming, danger avoidance, stuck detection).
+- Perception Engine:
+  - 3D First-Person ASCII raymarching view (`view_ascii`) with depth shading and entity detection.
+  - 2D Dynamically rotated radar (`radar`) relative to bot heading with 8-way entity gaze arrows (`↑ ↗ → ↘ ↓ ↙ ← ↖`) and raycast occlusion (fog of war `?`).
+  - Ring buffer of last 60 visual frames captured at ~5-10 FPS for playback, timeline queries, and autonomous path interruption on POI discovery (caves, ores, players).
+- Python Workspace SDK wrapping all capabilities into atomic MCP `@tool` methods.
 
 ### Project type
 - [x] Bot / automation
@@ -39,19 +43,26 @@ Enable AI agents to execute console commands, broadcast chat messages, inspect r
 ## 2. Current Status
 
 ### Status summary
-Completed & Deployed v1.0.0 (Live on `nodefrankfurt.kasperstudios.xyz`).
+- v1.0.0 (Core Server REST Bridge, Chat Events, Unicode Fix) - COMPLETE & DEPLOYED.
+- v1.1.0 (Fake Player Avatar, KasHub A* Pathfinding, 3D ASCII & Rotated 2D Perception, 60-Frame Ring Buffer) - IN ARCHITECTURE & PLANNING.
 
-### Implemented
+### Implemented (v1.0.0)
 - [x] Architecture & protocol design
 - [x] Python Workspace SDK implementation (`workspace/workspace.py`, `workspace/manifest.toml`, `workspace/run.py`)
 - [x] Forge 1.21.1 server bridge mod (`unai_bridge`) with chat & lifecycle events
 - [x] Paper/Spigot server bridge plugin (`UnAIBridge`) with chat & lifecycle events
+- [x] Proper UTF-8 & Unicode unescape decoding for chat messages and JSON component rendering
 - [x] Local builds of both jars in `build-artifacts/`
 - [x] Published GitHub repository (`kasper-studios/unai-minecraft-workspace`)
 - [x] GitHub Release `v1.0.0` with assets attached
 - [x] Deployed and active on Frankfurt server (`nodefrankfurt.kasperstudios.xyz`)
 - [x] Indexed in UnAI marketplace (`main/wsmarketplace/index.json`)
-- [x] Installed and verified via `unai workspace install minecraft` and live test suite
+
+### In progress (v1.1.0 Avatar & Perception Engine)
+- [ ] Virtual `ServerPlayer` (Fake Player) lifecycle & packet handling (`bot.spawn`, `bot.despawn`, `bot.say`, `bot.action`)
+- [ ] 3D A* Pathfinding engine integration from KasHub (`bot.move_to`, `bot.stop_move`, `bot.nav_status`)
+- [ ] 3D First-Person ASCII Raymarcher & 2D Dynamic Rotated Radar with LOS raycast
+- [ ] 60-Frame ring buffer with ~5 FPS timeline query & POI event notifications
 
 ---
 
@@ -71,23 +82,43 @@ Completed & Deployed v1.0.0 (Live on `nodefrankfurt.kasperstudios.xyz`).
 
 ---
 
-## 4. Architecture Notes
+## 4. Architecture & Perception Pipeline
 
-### High-level architecture
+### Perception & Navigation Workflow
 ```txt
-[ UnAI Python Workspace ] ──(HTTP JSON / Bearer Auth)──> [ Minecraft Server (Port 25585) ]
-  ├── minecraft.connect                                       ├── /api/status
-  ├── minecraft.command                                       ├── /api/command
-  ├── minecraft.chat                                          ├── /api/chat
-  ├── minecraft.messages_history                              ├── /api/chat/history
-  ├── minecraft.notifications_feed                            ├── /api/notifications/feed
-  ├── minecraft.notifications_clear                           ├── /api/notifications/clear
-  └── minecraft.status / players                              └── /api/players
+[ Agent Goal: Walk to X:100 Z:200 ]
+               │
+               ▼
+[ Start A* Pathfinding ] ──> [ Mod Ticks Movement (KasHub A*) ]
+                                       │
+                     ┌─────────────────┴─────────────────┐
+                     ▼                                   ▼
+        [ Capture Visual Frame ]              [ POI Raycast Checks ]
+        (Depth / 3D ASCII / Radar)            (Caves, Ores, Players)
+                     │                                   │
+                     ▼                                   ▼
+        [ 60-Frame Ring Buffer ]              [ If POI detected: Emit Alert ]
+        (5 FPS playback timeline)                        │
+                     │                                   ▼
+                     └─────────────────> [ Agent inspects frame & halts path ]
+                                         [ Agent reroutes into Cave/Objective ]
 ```
 
-### Security & Auth (ADR-0004)
-- Server creates `config/unai-bridge.json` (or `plugins/UnAIBridge/config.yml`) with random token `unai_mc_<hex>`.
-- Prints token to server console on launch.
-- Workspace stores connection in `~/.unai/data/minecraft/session.json`.
-- `minecraft.connect` tool vanishes once connected (`enabled_if=lambda ws: not ws.is_connected`).
-- Session reset via `unai workspace reset-session minecraft`.
+### Planned MCP Tools (v1.1.0)
+1. **Lifecycle & Avatar:**
+   - `minecraft.bot.spawn(name, x, y, z, target_player)`
+   - `minecraft.bot.despawn()`
+   - `minecraft.bot.say(message)`
+   - `minecraft.bot.action(action)` (sneak, swing, jump)
+   - `minecraft.bot.equip(mainhand, armor)`
+2. **Pathfinding & Movement:**
+   - `minecraft.bot.move_to(x, y, z, target, radius)`
+   - `minecraft.bot.stop_move()`
+   - `minecraft.bot.look_at(target | yaw, pitch)`
+   - `minecraft.bot.nav_status()`
+3. **Perception & Vision:**
+   - `minecraft.bot.view_ascii(width, height, fov)` (3D First-Person View)
+   - `minecraft.bot.radar(radius)` (2D Dynamic Heading-Rotated Radar)
+   - `minecraft.bot.frames(limit, fps)` (Recent cached frame playback)
+   - `minecraft.bot.target()` (Crosshair block/entity check)
+   - `minecraft.players.radar()` (Line-of-sight & player state radar)
