@@ -441,10 +441,11 @@ public class FakePlayerManager {
         if (!isSpawned()) return "error: bot not spawned";
         switch (action.toLowerCase()) {
             case "jump" -> server.execute(() -> {
-                bot.setDeltaMovement(bot.getDeltaMovement().x, 0.48, bot.getDeltaMovement().z);
+                bot.setDeltaMovement(bot.getDeltaMovement().x, 0.54, bot.getDeltaMovement().z);
                 bot.hasImpulse = true;
                 bot.hurtMarked = true;
                 server.getPlayerList().broadcastAll(new ClientboundSetEntityMotionPacket(bot));
+                server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket(bot));
             });
             case "swing", "attack" -> server.execute(() -> {
                 bot.swing(InteractionHand.MAIN_HAND, true);
@@ -1402,13 +1403,10 @@ public class FakePlayerManager {
             }
         }
 
-        // Autonomous Living & Idle Life Engine
-        if (autonomousMode && !isNavigating && !isGuardMode) {
-            if (socialMirrorCooldown > 0) socialMirrorCooldown--;
-
-            // 1. Social Proximity & Player Mirroring
+        // Attentive player tracking
+        if (!isNavigating && !isGuardMode) {
             ServerPlayer nearbyPlayer = null;
-            double closestDistSq = 25.0; // within 5 blocks
+            double closestDistSq = 36.0; // within 6 blocks
             for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
                 if (sp != bot && sp.level() == bot.level()) {
                     double d = sp.distanceToSqr(bot);
@@ -1421,55 +1419,6 @@ public class FakePlayerManager {
 
             if (nearbyPlayer != null) {
                 lookAt(nearbyPlayer.getX(), nearbyPlayer.getEyeY(), nearbyPlayer.getZ(), null, null);
-
-                if (socialMirrorCooldown == 0) {
-                    if (nearbyPlayer.isShiftKeyDown() && !bot.isShiftKeyDown()) {
-                        action("twerk");
-                        socialMirrorCooldown = 50;
-                    } else if (nearbyPlayer.getDeltaMovement().y > 0.25 && bot.onGround()) {
-                        action("jump");
-                        socialMirrorCooldown = 40;
-                    }
-                }
-            }
-
-            // 2. Ambient Idle Life Cycle
-            autonomousIdleTicks++;
-            if (autonomousIdleTicks >= nextIdleActionTicks) {
-                autonomousIdleTicks = 0;
-                nextIdleActionTicks = 60 + random.nextInt(120);
-
-                if (nearbyPlayer == null) {
-                    int roll = random.nextInt(100);
-                    if (roll < 45) {
-                        float rYaw = (random.nextFloat() * 360f) - 180f;
-                        float rPitch = (random.nextFloat() * 40f) - 20f;
-                        lookAt(null, null, null, rYaw, rPitch);
-                    } else if (roll < 80) {
-                        BlockPos center = (tetherHomePos != null) ? tetherHomePos : bot.blockPosition();
-                        int dx = random.nextInt(7) - 3;
-                        int dz = random.nextInt(7) - 3;
-                        BlockPos targetGround = center.offset(dx, 0, dz);
-
-                        ServerLevel sl = bot.serverLevel();
-                        if (sl.hasChunkAt(targetGround)) {
-                            while (targetGround.getY() > sl.getMinBuildHeight() && sl.getBlockState(targetGround).isAir()) {
-                                targetGround = targetGround.below();
-                            }
-                            while (targetGround.getY() < sl.getMaxBuildHeight() && !sl.getBlockState(targetGround.above()).isAir()) {
-                                targetGround = targetGround.above();
-                            }
-                            if (bot.distanceToSqr(Vec3.atCenterOf(targetGround)) > 2.0) {
-                                navigateTo(targetGround.getX() + 0.5, targetGround.getY() + 1, targetGround.getZ() + 0.5, 1.2f);
-                            }
-                        }
-                    } else if (roll < 92) {
-                        bot.swing(InteractionHand.MAIN_HAND, true);
-                        server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(bot, 0));
-                    } else {
-                        action("nod");
-                    }
-                }
             }
         }
 
