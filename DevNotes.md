@@ -71,6 +71,11 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 - [x] Realistic Player Knockback & Melee Weapon Attack Physics (3.5m reach check)
 - [x] Native Inventory Tools (`bot.inventory`, `bot.equip`, `bot.drop` with visual 3D packet sync)
 - [x] Full Inventory & Survival System (`bot.select_slot`, `bot.swap_slots`, `bot.use_item`, `bot.clear_inventory`, `bot.craft`, `bot.break_block`, `bot.find_blocks`, automatic ground pickup)
+- [x] Expressive Emotes & Body Movements (`twerk` / `teabag`, `nod`, `shake`, `spin`)
+- [x] World Building Engine (`bot.place_block` with 3D audio & block state placement)
+- [x] Container & Chest System (`bot.container_interact` for chest item list, deposit, and withdraw)
+- [x] Autonomous Bodyguard & Combat AI (`bot.guard` auto-targets hostile mobs in 10m, auto-eats food on low HP)
+- [x] Autonomous Woodchopper Routine (`bot.auto_chop` scans, navigates, and mines tree logs)
 - [x] Built and deployed `unai-bridge-forge-1.21.1-1.0.0.jar` to Frankfurt server (`nodefrankfurt.kasperstudios.xyz`)
 - [x] Verified end-to-end via Python Minecraft Workspace test runner
 
