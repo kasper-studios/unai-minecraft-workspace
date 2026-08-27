@@ -450,6 +450,55 @@ public class FakePlayerManager {
                     server.getPlayerList().broadcastAll(new ClientboundSetEntityDataPacket(bot.getId(), bot.getEntityData().packDirty()));
                 }
             });
+            case "twerk", "teabag" -> server.execute(() -> {
+                new Thread(() -> {
+                    try {
+                        for (int i = 0; i < 6; i++) {
+                            boolean crouch = (i % 2 == 0);
+                            server.execute(() -> {
+                                bot.setShiftKeyDown(crouch);
+                                bot.setPose(crouch ? Pose.CROUCHING : Pose.STANDING);
+                                if (bot.getEntityData().isDirty()) {
+                                    server.getPlayerList().broadcastAll(new ClientboundSetEntityDataPacket(bot.getId(), bot.getEntityData().packDirty()));
+                                }
+                            });
+                            Thread.sleep(120);
+                        }
+                        server.execute(() -> {
+                            bot.setShiftKeyDown(false);
+                            bot.setPose(Pose.STANDING);
+                        });
+                    } catch (InterruptedException ignored) {}
+                }).start();
+            });
+            case "nod" -> server.execute(() -> {
+                new Thread(() -> {
+                    try {
+                        float originalPitch = bot.getXRot();
+                        float originalYaw = bot.getYRot();
+                        for (int i = 0; i < 4; i++) {
+                            float p = (i % 2 == 0) ? 45.0f : -30.0f;
+                            lookAt(null, null, null, originalYaw, p);
+                            Thread.sleep(150);
+                        }
+                        lookAt(null, null, null, originalYaw, originalPitch);
+                    } catch (InterruptedException ignored) {}
+                }).start();
+            });
+            case "shake" -> server.execute(() -> {
+                new Thread(() -> {
+                    try {
+                        float originalPitch = bot.getXRot();
+                        float originalYaw = bot.getYRot();
+                        for (int i = 0; i < 4; i++) {
+                            float y = originalYaw + ((i % 2 == 0) ? 35.0f : -35.0f);
+                            lookAt(null, null, null, y, originalPitch);
+                            Thread.sleep(150);
+                        }
+                        lookAt(null, null, null, originalYaw, originalPitch);
+                    } catch (InterruptedException ignored) {}
+                }).start();
+            });
             case "spin" -> { targetYaw = bot.getYRot() + 360f; }
             default -> { return "unknown_action"; }
         }
@@ -682,6 +731,174 @@ public class FakePlayerManager {
         }
         sb.append("]");
         return sb.toString();
+    }
+
+    public synchronized String placeBlock(int x, int y, int z, String blockId) {
+        if (!isSpawned()) return "error: bot not spawned";
+        BlockPos pos = new BlockPos(x, y, z);
+        double distSq = bot.distanceToSqr(Vec3.atCenterOf(pos));
+        if (distSq > 36.0) return "error: block too far (" + String.format(Locale.ROOT, "%.1fm", Math.sqrt(distSq)) + " > 6m)";
+
+        ServerLevel level = bot.serverLevel();
+        var currentState = level.getBlockState(pos);
+        if (!currentState.isAir() && !currentState.canBeReplaced()) {
+            return "error: position (x=" + x + ", y=" + y + ", z=" + z + ") is occupied by " + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(currentState.getBlock());
+        }
+
+        net.minecraft.world.item.Item itemToPlace = null;
+        if (blockId != null && !blockId.isEmpty()) {
+            var resLoc = net.minecraft.resources.ResourceLocation.parse(blockId);
+            itemToPlace = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(resLoc);
+            if (itemToPlace == net.minecraft.world.item.Items.AIR) {
+                var block = net.minecraft.core.registries.BuiltInRegistries.BLOCK.get(resLoc);
+                if (block != net.minecraft.world.level.block.Blocks.AIR) {
+                    itemToPlace = block.asItem();
+                }
+            }
+        }
+
+        int slotFound = -1;
+        if (itemToPlace != null && itemToPlace != net.minecraft.world.item.Items.AIR) {
+            for (int i = 0; i < bot.getInventory().getContainerSize(); i++) {
+                ItemStack stack = bot.getInventory().getItem(i);
+                if (!stack.isEmpty() && stack.is(itemToPlace)) {
+                    slotFound = i;
+                    break;
+                }
+            }
+            if (slotFound == -1) {
+                return "error: item " + blockId + " not found in bot inventory";
+            }
+        } else {
+            ItemStack mainHand = bot.getMainHandItem();
+            if (mainHand.isEmpty()) {
+                for (int i = 0; i < bot.getInventory().getContainerSize(); i++) {
+                    ItemStack stack = bot.getInventory().getItem(i);
+                    if (!stack.isEmpty() && stack.getItem() instanceof net.minecraft.world.item.BlockItem) {
+                        slotFound = i;
+                        itemToPlace = stack.getItem();
+                        break;
+                    }
+                }
+                if (slotFound == -1) return "error: no block item in bot inventory";
+            } else {
+                itemToPlace = mainHand.getItem();
+            }
+        }
+
+        final int consumeSlot = slotFound;
+        final net.minecraft.world.level.block.Block blockToSet = (itemToPlace instanceof net.minecraft.world.item.BlockItem bi) ? bi.getBlock() : net.minecraft.core.registries.BuiltInRegistries.BLOCK.get(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(itemToPlace));
+
+        if (blockToSet == net.minecraft.world.level.block.Blocks.AIR) {
+            return "error: item is not a placeable block";
+        }
+
+        server.execute(() -> {
+            lookAt(x + 0.5, y + 0.5, z + 0.5, null, null);
+            bot.swing(InteractionHand.MAIN_HAND, true);
+            server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(bot, 0));
+
+            var defaultState = blockToSet.defaultBlockState();
+            level.setBlock(pos, defaultState, 3);
+            level.playSound(null, pos, defaultState.getSoundType().getPlaceSound(), net.minecraft.sounds.SoundSource.BLOCKS, 1.0f, 1.0f);
+
+            if (consumeSlot >= 0) {
+                bot.getInventory().getItem(consumeSlot).shrink(1);
+            } else if (!bot.getMainHandItem().isEmpty()) {
+                bot.getMainHandItem().shrink(1);
+            }
+        });
+
+        String placedId = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(blockToSet).toString();
+        return "placed: " + placedId + " at (" + x + ", " + y + ", " + z + ")";
+    }
+
+    public synchronized String containerInteract(int x, int y, int z, String action, String itemId, Integer count) {
+        if (!isSpawned()) return "error: bot not spawned";
+        BlockPos pos = new BlockPos(x, y, z);
+        double distSq = bot.distanceToSqr(Vec3.atCenterOf(pos));
+        if (distSq > 36.0) return "error: container too far (" + String.format(Locale.ROOT, "%.1fm", Math.sqrt(distSq)) + " > 6m)";
+
+        ServerLevel level = bot.serverLevel();
+        net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(pos);
+        if (!(be instanceof net.minecraft.world.Container container)) {
+            return "error: block at (" + x + ", " + y + ", " + z + ") is not a chest or container";
+        }
+
+        String act = (action == null) ? "list" : action.toLowerCase(Locale.ROOT);
+        int targetCount = (count == null || count <= 0) ? 64 : count;
+
+        switch (act) {
+            case "list" -> {
+                StringBuilder sb = new StringBuilder("[");
+                int added = 0;
+                for (int i = 0; i < container.getContainerSize(); i++) {
+                    ItemStack stack = container.getItem(i);
+                    if (!stack.isEmpty()) {
+                        if (added > 0) sb.append(",");
+                        String id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+                        sb.append("{\"slot\":").append(i)
+                          .append(",\"id\":\"").append(id)
+                          .append("\",\"count\":").append(stack.getCount())
+                          .append("}");
+                        added++;
+                    }
+                }
+                sb.append("]");
+                return sb.toString();
+            }
+            case "deposit" -> {
+                int transferred = 0;
+                boolean depositAll = (itemId == null || itemId.isEmpty() || "all".equalsIgnoreCase(itemId));
+                var targetItem = depositAll ? null : net.minecraft.core.registries.BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.parse(itemId));
+
+                for (int i = 0; i < bot.getInventory().getContainerSize() && transferred < targetCount; i++) {
+                    ItemStack botStack = bot.getInventory().getItem(i);
+                    if (botStack.isEmpty()) continue;
+                    if (!depositAll && !botStack.is(targetItem)) continue;
+
+                    for (int cSlot = 0; cSlot < container.getContainerSize() && !botStack.isEmpty(); cSlot++) {
+                        ItemStack cStack = container.getItem(cSlot);
+                        if (cStack.isEmpty()) {
+                            int toMove = Math.min(botStack.getCount(), targetCount - transferred);
+                            container.setItem(cSlot, botStack.split(toMove));
+                            transferred += toMove;
+                        } else if (ItemStack.isSameItemSameComponents(botStack, cStack)) {
+                            int space = cStack.getMaxStackSize() - cStack.getCount();
+                            if (space > 0) {
+                                int toMove = Math.min(Math.min(botStack.getCount(), space), targetCount - transferred);
+                                cStack.grow(toMove);
+                                botStack.shrink(toMove);
+                                transferred += toMove;
+                            }
+                        }
+                    }
+                }
+                container.setChanged();
+                return "deposited " + transferred + " items to container at (" + x + ", " + y + ", " + z + ")";
+            }
+            case "withdraw" -> {
+                int transferred = 0;
+                boolean withdrawAll = (itemId == null || itemId.isEmpty() || "all".equalsIgnoreCase(itemId));
+                var targetItem = withdrawAll ? null : net.minecraft.core.registries.BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.parse(itemId));
+
+                for (int cSlot = 0; cSlot < container.getContainerSize() && transferred < targetCount; cSlot++) {
+                    ItemStack cStack = container.getItem(cSlot);
+                    if (cStack.isEmpty()) continue;
+                    if (!withdrawAll && !cStack.is(targetItem)) continue;
+
+                    int toMove = Math.min(cStack.getCount(), targetCount - transferred);
+                    ItemStack taken = cStack.split(toMove);
+                    if (cStack.isEmpty()) container.setItem(cSlot, ItemStack.EMPTY);
+
+                    bot.getInventory().add(taken);
+                    transferred += toMove;
+                }
+                container.setChanged();
+                return "withdrew " + transferred + " items from container at (" + x + ", " + y + ", " + z + ")";
+            }
+            default -> { return "error: unknown action " + act; }
+        }
     }
 
     public synchronized String equip(String slot, String itemId) {

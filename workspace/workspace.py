@@ -347,9 +347,9 @@ class MinecraftWorkspace(Workspace):
 
     @tool(
         "minecraft.bot.action",
-        description="Perform in-game physical action (sneak, swing, jump, spin)",
+        description="Perform in-game physical action or emote e.g. 'jump', 'swing', 'attack', 'sneak', 'spin', 'twerk', 'teabag', 'nod', 'shake'",
         arguments={
-            "action": {"type": "string", "description": "Action name: 'sneak' (toggle shift), 'swing' (swing arm), 'jump', 'spin'"}
+            "action": {"type": "string", "description": "Action name: 'sneak' (toggle shift), 'swing' / 'attack', 'jump', 'spin' (360°), 'twerk' / 'teabag' (rapid crouch emote), 'nod' (head nod), 'shake' (head shake)"}
         },
         enabled_if=lambda ws: ws.is_connected,
     )
@@ -525,6 +525,56 @@ class MinecraftWorkspace(Workspace):
                 if not data.get("ok"): raise RuntimeError(data.get("error", "break block failed"))
                 msg = data.get("message", "Mined")
                 return await self._append_hud_if_enabled(f"Bot mined block: {msg}")
+
+    @tool(
+        "minecraft.bot.place_block",
+        description="Place a block from inventory at specified world coordinates",
+        arguments={
+            "x": {"type": "integer", "description": "Target X coordinate"},
+            "y": {"type": "integer", "description": "Target Y coordinate"},
+            "z": {"type": "integer", "description": "Target Z coordinate"},
+            "block_id": {"type": "string", "description": "Optional block ID e.g. 'minecraft:oak_planks', 'minecraft:cobblestone' (or empty for current held block)"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_place_block(self, x: int, y: int, z: int, block_id: str = "", reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/place_block"
+        payload = {"x": str(x), "y": str(y), "z": str(z), "block_id": block_id}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "place block failed"))
+                msg = data.get("message", "Placed")
+                return await self._append_hud_if_enabled(f"Bot placed block: {msg}")
+
+    @tool(
+        "minecraft.bot.container_interact",
+        description="Interact with a chest or container at coordinates (list items, deposit, withdraw)",
+        arguments={
+            "x": {"type": "integer", "description": "Container block X"},
+            "y": {"type": "integer", "description": "Container block Y"},
+            "z": {"type": "integer", "description": "Container block Z"},
+            "action": {"type": "string", "description": "Action: 'list' (view items), 'deposit' (put items into container), 'withdraw' (take items from container)"},
+            "item_id": {"type": "string", "description": "Item ID to deposit/withdraw e.g. 'minecraft:oak_log' or 'all' for all items"},
+            "count": {"type": "integer", "description": "Number of items to deposit/withdraw (default: 64)"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_container_interact(self, x: int, y: int, z: int, action: str = "list", item_id: str = "all", count: int = 64, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/container_interact"
+        payload = {"x": str(x), "y": str(y), "z": str(z), "action": action, "item_id": item_id, "count": str(count)}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if isinstance(data, list):
+                    res_str = json.dumps(data, indent=2, ensure_ascii=False)
+                elif not data.get("ok"):
+                    raise RuntimeError(data.get("error", "container interact failed"))
+                else:
+                    res_str = data.get("message", "Container action completed")
+                return await self._append_hud_if_enabled(res_str)
 
     @tool(
         "minecraft.bot.find_blocks",
