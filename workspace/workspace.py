@@ -635,6 +635,26 @@ class MinecraftWorkspace(Workspace):
                 return await self._append_hud_if_enabled(msg)
 
     @tool(
+        "minecraft.bot.autonomous",
+        description="Configure autonomous living and idle life engine (organic roaming, player mirroring, head turning, casual chores)",
+        arguments={
+            "enabled": {"type": "boolean", "description": "True to enable autonomous living mode, False to freeze bot in place", "default": True},
+            "radius": {"type": "integer", "description": "Tether radius around home base in blocks (default: 8)", "default": 8}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_autonomous(self, enabled: bool = True, radius: int = 8, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/autonomous"
+        payload = {"enabled": "true" if enabled else "false", "radius": str(radius)}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "autonomous config failed"))
+                msg = data.get("message", "Autonomous mode updated")
+                return await self._append_hud_if_enabled(msg)
+
+    @tool(
         "minecraft.bot.find_blocks",
         description="Scan nearby area around the bot to find specific blocks (e.g. 'log', 'ore', 'table', 'dirt')",
         arguments={

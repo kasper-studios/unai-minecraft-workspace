@@ -79,6 +79,14 @@ public class FakePlayerManager {
     private final Set<ChunkPos> loadedChunks = Collections.synchronizedSet(new HashSet<>());
     private ChunkPos lastBotChunkPos = null;
 
+    // Autonomous Living & Idle Life Engine
+    private volatile boolean autonomousMode = true;
+    private BlockPos tetherHomePos = null;
+    private int autonomousIdleTicks = 0;
+    private int nextIdleActionTicks = 80;
+    private int socialMirrorCooldown = 0;
+    private final Random random = new Random();
+
     private static final FakePlayerManager INSTANCE = new FakePlayerManager();
 
     public static FakePlayerManager getInstance() {
@@ -242,6 +250,10 @@ public class FakePlayerManager {
                 LOGGER.error("[UnAI-Bridge] Spawn failed", t);
             }
         });
+
+        tetherHomePos = new BlockPos((int)Math.floor(fx), (int)Math.floor(fy), (int)Math.floor(fz));
+        autonomousIdleTicks = 0;
+        autonomousMode = true;
 
         return "spawned:" + fName;
     }
@@ -999,6 +1011,19 @@ public class FakePlayerManager {
         return "{\"enabled\":" + (r > 0) + ",\"radius\":" + r + ",\"total_chunks\":" + totalChunks + ",\"active_forced\":" + loadedChunks.size() + (cp != null ? ",\"center_chunk\":[" + cp.x + "," + cp.z + "]" : "") + "}";
     }
 
+    public synchronized String setAutonomousMode(boolean enabled, Integer radius) {
+        if (!isSpawned()) return "error: bot not spawned";
+        this.autonomousMode = enabled;
+        if (enabled && tetherHomePos == null) {
+            this.tetherHomePos = bot.blockPosition();
+        }
+        return "autonomous_mode: " + (enabled ? "enabled (tether home: " + tetherHomePos.toShortString() + ")" : "disabled");
+    }
+
+    public synchronized String getAutonomousStatus() {
+        return "{\"enabled\":" + autonomousMode + ",\"home\":" + (tetherHomePos != null ? "[\"" + tetherHomePos.toShortString() + "\"]" : "null") + "}";
+    }
+
     public void clearLoadedChunks() {
         if (loadedChunks.isEmpty()) return;
         if (bot != null && bot.serverLevel() != null) {
@@ -1252,6 +1277,77 @@ public class FakePlayerManager {
                 }
             } catch (Throwable t) {
                 LOGGER.warn("[UnAI-Bridge] Guard tick error: " + t.getMessage());
+            }
+        }
+
+        // Autonomous Living & Idle Life Engine
+        if (autonomousMode && !isNavigating && !isGuardMode) {
+            if (socialMirrorCooldown > 0) socialMirrorCooldown--;
+
+            // 1. Social Proximity & Player Mirroring
+            ServerPlayer nearbyPlayer = null;
+            double closestDistSq = 25.0; // within 5 blocks
+            for (ServerPlayer sp : server.getPlayerList().getPlayers()) {
+                if (sp != bot && sp.level() == bot.level()) {
+                    double d = sp.distanceToSqr(bot);
+                    if (d < closestDistSq) {
+                        closestDistSq = d;
+                        nearbyPlayer = sp;
+                    }
+                }
+            }
+
+            if (nearbyPlayer != null) {
+                lookAt(nearbyPlayer.getX(), nearbyPlayer.getEyeY(), nearbyPlayer.getZ(), null, null);
+
+                if (socialMirrorCooldown == 0) {
+                    if (nearbyPlayer.isShiftKeyDown() && !bot.isShiftKeyDown()) {
+                        action("twerk");
+                        socialMirrorCooldown = 50;
+                    } else if (nearbyPlayer.getDeltaMovement().y > 0.25 && bot.onGround()) {
+                        action("jump");
+                        socialMirrorCooldown = 40;
+                    }
+                }
+            }
+
+            // 2. Ambient Idle Life Cycle
+            autonomousIdleTicks++;
+            if (autonomousIdleTicks >= nextIdleActionTicks) {
+                autonomousIdleTicks = 0;
+                nextIdleActionTicks = 60 + random.nextInt(120);
+
+                if (nearbyPlayer == null) {
+                    int roll = random.nextInt(100);
+                    if (roll < 45) {
+                        float rYaw = (random.nextFloat() * 360f) - 180f;
+                        float rPitch = (random.nextFloat() * 40f) - 20f;
+                        lookAt(null, null, null, rYaw, rPitch);
+                    } else if (roll < 80) {
+                        BlockPos center = (tetherHomePos != null) ? tetherHomePos : bot.blockPosition();
+                        int dx = random.nextInt(7) - 3;
+                        int dz = random.nextInt(7) - 3;
+                        BlockPos targetGround = center.offset(dx, 0, dz);
+
+                        ServerLevel sl = bot.serverLevel();
+                        if (sl.hasChunkAt(targetGround)) {
+                            while (targetGround.getY() > sl.getMinBuildHeight() && sl.getBlockState(targetGround).isAir()) {
+                                targetGround = targetGround.below();
+                            }
+                            while (targetGround.getY() < sl.getMaxBuildHeight() && !sl.getBlockState(targetGround.above()).isAir()) {
+                                targetGround = targetGround.above();
+                            }
+                            if (bot.distanceToSqr(Vec3.atCenterOf(targetGround)) > 2.0) {
+                                navigateTo(targetGround.getX() + 0.5, targetGround.getY() + 1, targetGround.getZ() + 0.5, 1.2f);
+                            }
+                        }
+                    } else if (roll < 92) {
+                        bot.swing(InteractionHand.MAIN_HAND, true);
+                        server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(bot, 0));
+                    } else {
+                        action("nod");
+                    }
+                }
             }
         }
 
