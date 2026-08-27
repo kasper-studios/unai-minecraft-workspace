@@ -219,6 +219,8 @@ public class ForgeBridgeMod {
         httpServer.createContext("/api/bot/break_block", new BotBreakBlockHandler());
         httpServer.createContext("/api/bot/place_block", new BotPlaceBlockHandler());
         httpServer.createContext("/api/bot/container_interact", new BotContainerInteractHandler());
+        httpServer.createContext("/api/bot/guard", new BotGuardHandler());
+        httpServer.createContext("/api/bot/auto_chop", new BotAutoChopHandler());
         httpServer.createContext("/api/bot/find_blocks", new BotFindBlocksHandler());
         httpServer.createContext("/api/bot/navigate", new BotNavigateHandler());
         httpServer.createContext("/api/bot/nav_status", new BotNavStatusHandler());
@@ -867,6 +869,35 @@ public class ForgeBridgeMod {
             String res = FakePlayerManager.getInstance().containerInteract(x, y, z, action, itemId, count);
             if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
             else if (res.startsWith("[")) sendJsonResponse(exchange, 200, res);
+            else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
+        }
+    }
+
+    private class BotGuardHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String body = readBody(exchange);
+            boolean enabled = "true".equalsIgnoreCase(extractJsonField(body, "enabled"));
+            String target = extractJsonField(body, "target");
+            String res = FakePlayerManager.getInstance().setGuardMode(enabled, target);
+            if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
+        }
+    }
+
+    private class BotAutoChopHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String body = readBody(exchange);
+            int count = 5;
+            try {
+                String cStr = extractJsonField(body, "count");
+                if (cStr != null && !cStr.isEmpty()) count = Integer.parseInt(cStr);
+            } catch (Exception ignored) {}
+            String res = FakePlayerManager.getInstance().autoChop(count);
+            if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
             else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
         }
     }

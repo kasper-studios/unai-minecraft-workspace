@@ -26,6 +26,7 @@ import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.entity.Pose;
+import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.AABB;
@@ -68,6 +69,9 @@ public class FakePlayerManager {
 
     private float targetYaw = Float.NaN;
     private float targetPitch = Float.NaN;
+
+    private volatile boolean isGuardMode = false;
+    private volatile String guardTargetPlayer = null;
 
     private static final FakePlayerManager INSTANCE = new FakePlayerManager();
 
@@ -901,6 +905,54 @@ public class FakePlayerManager {
         }
     }
 
+    public synchronized String setGuardMode(boolean enabled, String targetPlayer) {
+        if (!isSpawned()) return "error: bot not spawned";
+        this.isGuardMode = enabled;
+        this.guardTargetPlayer = targetPlayer;
+        return "guard_mode: " + (enabled ? "enabled (target: " + (targetPlayer == null || targetPlayer.isEmpty() ? "bot" : targetPlayer) + ")" : "disabled");
+    }
+
+    public synchronized String autoChop(int count) {
+        if (!isSpawned()) return "error: bot not spawned";
+        int targetLogs = Math.max(1, Math.min(32, count));
+        new Thread(() -> {
+            try {
+                int chopped = 0;
+                for (int attempt = 0; attempt < targetLogs * 2 && chopped < targetLogs; attempt++) {
+                    String json = findBlocksJson("log", 16);
+                    if (json.equals("[]")) break;
+
+                    java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"x\":(-?\\d+),\"y\":(-?\\d+),\"z\":(-?\\d+)").matcher(json);
+                    if (!m.find()) break;
+
+                    int x = Integer.parseInt(m.group(1));
+                    int y = Integer.parseInt(m.group(2));
+                    int z = Integer.parseInt(m.group(3));
+
+                    double dist = Math.sqrt(bot.distanceToSqr(x + 0.5, y + 0.5, z + 0.5));
+                    if (dist > 3.5) {
+                        navigateTo(x + 0.5, y, z + 0.5, 2.0f);
+                        int navWait = 0;
+                        while (isNavigating && navWait < 50) {
+                            Thread.sleep(200);
+                            navWait++;
+                        }
+                    }
+
+                    String breakRes = breakBlock(x, y, z);
+                    if (breakRes.startsWith("mined:")) {
+                        chopped++;
+                        Thread.sleep(400);
+                    }
+                }
+            } catch (Throwable t) {
+                LOGGER.warn("[UnAI-Bridge] AutoChop error: " + t.getMessage());
+            }
+        }).start();
+
+        return "auto_chop started: target " + targetLogs + " logs";
+    }
+
     public synchronized String equip(String slot, String itemId) {
         if (!isSpawned()) return "error: bot not spawned";
         var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(
@@ -1053,6 +1105,56 @@ public class FakePlayerManager {
                     }
                 }
             } catch (Throwable ignored) {}
+        }
+
+        // Guard mode logic (runs every 8 ticks ~0.4s)
+        if (isGuardMode && bot.tickCount % 8 == 0) {
+            try {
+                if (bot.getHealth() < 10.0f) {
+                    for (int i = 0; i < bot.getInventory().getContainerSize(); i++) {
+                        ItemStack stack = bot.getInventory().getItem(i);
+                        if (!stack.isEmpty() && stack.has(net.minecraft.core.component.DataComponents.FOOD)) {
+                            bot.eat(bot.serverLevel(), stack.split(1));
+                            bot.serverLevel().playSound(null, bot.getX(), bot.getY(), bot.getZ(),
+                                    net.minecraft.sounds.SoundEvents.GENERIC_EAT,
+                                    net.minecraft.sounds.SoundSource.PLAYERS, 0.5f, 1.0f);
+                            break;
+                        }
+                    }
+                }
+
+                Vec3 scanCenter = bot.position();
+                if (guardTargetPlayer != null && !guardTargetPlayer.isEmpty()) {
+                    ServerPlayer owner = server.getPlayerList().getPlayerByName(guardTargetPlayer);
+                    if (owner != null && owner.level() == bot.level()) {
+                        scanCenter = owner.position();
+                    }
+                }
+
+                List<Monster> monsters = bot.serverLevel().getEntitiesOfClass(
+                        Monster.class,
+                        new AABB(scanCenter.x - 10, scanCenter.y - 4, scanCenter.z - 10, scanCenter.x + 10, scanCenter.y + 4, scanCenter.z + 10),
+                        m -> m.isAlive() && !m.isSpectator()
+                );
+
+                if (!monsters.isEmpty()) {
+                    monsters.sort(Comparator.comparingDouble(m -> m.distanceToSqr(bot)));
+                    Monster target = monsters.get(0);
+                    double dist = bot.distanceTo(target);
+
+                    lookAt(target.getX(), target.getEyeY(), target.getZ(), null, null);
+
+                    if (dist <= 3.5) {
+                        bot.swing(InteractionHand.MAIN_HAND, true);
+                        server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(bot, 0));
+                        bot.attack(target);
+                    } else if (!isNavigating) {
+                        navigateTo(target.getX(), target.getY(), target.getZ(), 2.0f);
+                    }
+                }
+            } catch (Throwable t) {
+                LOGGER.warn("[UnAI-Bridge] Guard tick error: " + t.getMessage());
+            }
         }
 
         // A* Path execution

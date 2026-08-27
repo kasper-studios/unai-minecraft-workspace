@@ -577,6 +577,45 @@ class MinecraftWorkspace(Workspace):
                 return await self._append_hud_if_enabled(res_str)
 
     @tool(
+        "minecraft.bot.guard",
+        description="Toggle autonomous bodyguard & auto-attack mode to defend player/bot from hostile mobs",
+        arguments={
+            "enabled": {"type": "boolean", "description": "True to enable bodyguard mode, False to disable"},
+            "target": {"type": "string", "description": "Optional player nickname to guard (or empty to guard the bot itself)"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_guard(self, enabled: bool, target: str = "", reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/guard"
+        payload = {"enabled": "true" if enabled else "false", "target": target}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "guard mode failed"))
+                msg = data.get("message", "Guard mode updated")
+                return await self._append_hud_if_enabled(msg)
+
+    @tool(
+        "minecraft.bot.auto_chop",
+        description="Autonomous tree woodchopping routine (finds logs, navigates, breaks blocks)",
+        arguments={
+            "count": {"type": "integer", "description": "Target number of logs to chop (default: 5, max: 32)"}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_auto_chop(self, count: int = 5, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/auto_chop"
+        payload = {"count": str(count)}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "auto chop failed"))
+                msg = data.get("message", "Auto chop started")
+                return await self._append_hud_if_enabled(msg)
+
+    @tool(
         "minecraft.bot.find_blocks",
         description="Scan nearby area around the bot to find specific blocks (e.g. 'log', 'ore', 'table', 'dirt')",
         arguments={
