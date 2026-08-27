@@ -863,7 +863,7 @@ public class FakePlayerManager {
     }
 
     public synchronized String fillArea(int x1, int y1, int z1, int x2, int y2, int z2, String blockId, boolean replaceAirOnly) {
-        if (!isSpawned()) return "error: bot not spawned";
+        if (!isSpawned() || server == null) return "error: bot not spawned";
         int minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
         int minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
         int minZ = Math.min(z1, z2), maxZ = Math.max(z1, z2);
@@ -871,23 +871,74 @@ public class FakePlayerManager {
         int totalVolume = (maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
         if (totalVolume > 128) return "error: area too large (" + totalVolume + " blocks > max 128)";
 
-        int placed = 0;
-        for (int y = minY; y <= maxY; y++) {
-            for (int x = minX; x <= maxX; x++) {
-                for (int z = minZ; z <= maxZ; z++) {
-                    BlockPos p = new BlockPos(x, y, z);
-                    var state = bot.serverLevel().getBlockState(p);
-                    if (replaceAirOnly && !state.isAir() && !state.canBeReplaced()) continue;
-                    String res = placeBlock(x, y, z, blockId);
-                    if (res.startsWith("placed:")) {
-                        placed++;
-                    } else if (res.contains("no block item in bot inventory") || res.contains("not found in bot inventory")) {
-                        return "placed " + placed + " blocks (ran out of building items in inventory)";
+        try {
+            return server.submit(() -> {
+                if (!isSpawned()) return "error: bot not spawned";
+                ServerLevel level = bot.serverLevel();
+
+                net.minecraft.world.item.Item itemToPlace = null;
+                if (blockId != null && !blockId.isEmpty()) {
+                    String normId = blockId.contains(":") ? blockId : "minecraft:" + blockId;
+                    var resLoc = net.minecraft.resources.ResourceLocation.tryParse(normId);
+                    if (resLoc != null) {
+                        itemToPlace = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(resLoc);
                     }
                 }
-            }
+
+                int placed = 0;
+                for (int y = minY; y <= maxY; y++) {
+                    for (int x = minX; x <= maxX; x++) {
+                        for (int z = minZ; z <= maxZ; z++) {
+                            BlockPos p = new BlockPos(x, y, z);
+                            var state = level.getBlockState(p);
+                            if (replaceAirOnly && !state.isAir() && !state.canBeReplaced()) continue;
+
+                            int foundSlot = -1;
+                            net.minecraft.world.item.Item curItem = itemToPlace;
+                            if (curItem != null && curItem != net.minecraft.world.item.Items.AIR) {
+                                for (int i = 0; i < bot.getInventory().getContainerSize(); i++) {
+                                    ItemStack st = bot.getInventory().getItem(i);
+                                    if (!st.isEmpty() && st.is(curItem)) {
+                                        foundSlot = i;
+                                        break;
+                                    }
+                                }
+                            } else {
+                                for (int i = 0; i < bot.getInventory().getContainerSize(); i++) {
+                                    ItemStack st = bot.getInventory().getItem(i);
+                                    if (!st.isEmpty() && st.getItem() instanceof net.minecraft.world.item.BlockItem) {
+                                        foundSlot = i;
+                                        curItem = st.getItem();
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (foundSlot == -1) {
+                                return "placed " + placed + " blocks (ran out of building items in inventory)";
+                            }
+
+                            final net.minecraft.world.level.block.Block blockToSet = (curItem instanceof net.minecraft.world.item.BlockItem bi) ? bi.getBlock() : net.minecraft.core.registries.BuiltInRegistries.BLOCK.get(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(curItem));
+                            if (blockToSet == net.minecraft.world.level.block.Blocks.AIR) continue;
+
+                            var defaultState = blockToSet.defaultBlockState();
+                            level.setBlock(p, defaultState, 3);
+                            bot.getInventory().getItem(foundSlot).shrink(1);
+                            placed++;
+                        }
+                    }
+                }
+
+                if (placed > 0) {
+                    bot.swing(InteractionHand.MAIN_HAND, true);
+                    server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(bot, 0));
+                }
+
+                return "placed " + placed + " blocks in area (" + minX + "," + minY + "," + minZ + " to " + maxX + "," + maxY + "," + maxZ + ")";
+            }).get(3, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Throwable t) {
+            return "error: fillArea failed: " + t.getMessage();
         }
-        return "placed " + placed + " blocks in area (" + minX + "," + minY + "," + minZ + " to " + maxX + "," + maxY + "," + maxZ + ")";
     }
 
     public synchronized String containerInteract(int x, int y, int z, String action, String itemId, Integer count) {
