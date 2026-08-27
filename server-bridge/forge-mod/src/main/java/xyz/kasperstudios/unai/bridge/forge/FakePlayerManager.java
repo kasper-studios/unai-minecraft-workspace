@@ -720,46 +720,66 @@ public class FakePlayerManager {
     }
 
     public synchronized String findBlocksJson(String query, int radius) {
-        if (!isSpawned()) return "[]";
-        int r = Math.max(1, Math.min(24, radius));
+        if (!isSpawned() || server == null) return "[]";
+        int r = Math.max(1, Math.min(12, radius));
         String q = (query == null) ? "" : query.toLowerCase(Locale.ROOT).trim();
-        BlockPos center = bot.blockPosition();
-        ServerLevel level = bot.serverLevel();
 
-        record FoundBlock(String id, int x, int y, int z, double dist) {}
-        List<FoundBlock> found = new ArrayList<>();
+        try {
+            return server.submit(() -> {
+                if (!isSpawned()) return "[]";
+                BlockPos center = bot.blockPosition();
+                ServerLevel level = bot.serverLevel();
 
-        for (int dx = -r; dx <= r; dx++) {
-            for (int dy = -Math.min(r, 8); dy <= Math.min(r, 8); dy++) {
-                for (int dz = -r; dz <= r; dz++) {
-                    BlockPos p = center.offset(dx, dy, dz);
-                    if (!level.hasChunkAt(p)) continue;
-                    var state = level.getBlockState(p);
-                    if (state.isAir()) continue;
-                    String id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-                    if (q.isEmpty() || id.contains(q)) {
-                        double d = Math.sqrt(center.distSqr(p));
-                        found.add(new FoundBlock(id, p.getX(), p.getY(), p.getZ(), d));
+                record FoundBlock(String id, int x, int y, int z, double dist) {}
+                List<FoundBlock> found = new ArrayList<>();
+
+                int minY = Math.max(level.getMinBuildHeight(), center.getY() - Math.min(r, 6));
+                int maxY = Math.min(level.getMaxBuildHeight(), center.getY() + Math.min(r, 6));
+
+                for (int dy = minY - center.getY(); dy <= maxY - center.getY(); dy++) {
+                    for (int dx = -r; dx <= r; dx++) {
+                        for (int dz = -r; dz <= r; dz++) {
+                            BlockPos p = center.offset(dx, dy, dz);
+                            if (!level.hasChunkAt(p)) continue;
+                            var state = level.getBlockState(p);
+                            if (state.isAir()) continue;
+
+                            var block = state.getBlock();
+                            var key = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(block);
+                            String path = key.getPath();
+                            String fullId = key.toString();
+
+                            if (q.isEmpty() || path.contains(q) || fullId.contains(q)) {
+                                double d = Math.sqrt(center.distSqr(p));
+                                found.add(new FoundBlock(fullId, p.getX(), p.getY(), p.getZ(), d));
+                                if (found.size() >= 40) break;
+                            }
+                        }
+                        if (found.size() >= 40) break;
                     }
+                    if (found.size() >= 40) break;
                 }
-            }
-        }
-        found.sort(Comparator.comparingDouble(FoundBlock::dist));
-        if (found.size() > 20) found = found.subList(0, 20);
 
-        StringBuilder sb = new StringBuilder("[");
-        for (int i = 0; i < found.size(); i++) {
-            if (i > 0) sb.append(",");
-            FoundBlock b = found.get(i);
-            sb.append("{\"id\":\"").append(b.id)
-              .append("\",\"x\":").append(b.x)
-              .append(",\"y\":").append(b.y)
-              .append(",\"z\":").append(b.z)
-              .append(",\"dist\":").append(String.format(Locale.ROOT, "%.1f", b.dist))
-              .append("}");
+                found.sort(Comparator.comparingDouble(FoundBlock::dist));
+                if (found.size() > 20) found = found.subList(0, 20);
+
+                StringBuilder sb = new StringBuilder("[");
+                for (int i = 0; i < found.size(); i++) {
+                    if (i > 0) sb.append(",");
+                    FoundBlock b = found.get(i);
+                    sb.append("{\"id\":\"").append(b.id)
+                      .append("\",\"x\":").append(b.x)
+                      .append(",\"y\":").append(b.y)
+                      .append(",\"z\":").append(b.z)
+                      .append(",\"dist\":").append(String.format(Locale.ROOT, "%.1f", b.dist))
+                      .append("}");
+                }
+                sb.append("]");
+                return sb.toString();
+            }).get(2, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Throwable t) {
+            return "[]";
         }
-        sb.append("]");
-        return sb.toString();
     }
 
     public synchronized String placeBlock(int x, int y, int z, String blockId) {
