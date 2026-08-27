@@ -325,18 +325,19 @@ public class FakePlayerManager {
     }
 
     public void onPlayerJoin(ServerPlayer joiningPlayer) {
-        if (bot != null && !bot.isRemoved() && joiningPlayer != null) {
-            try {
-                EnumSet<ClientboundPlayerInfoUpdatePacket.Action> actions = EnumSet.of(
-                        ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER,
-                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LISTED,
-                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LATENCY,
-                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_GAME_MODE,
-                        ClientboundPlayerInfoUpdatePacket.Action.UPDATE_DISPLAY_NAME
-                );
-                joiningPlayer.connection.send(new ClientboundPlayerInfoUpdatePacket(actions, List.of(bot)));
-                joiningPlayer.connection.send(new ClientboundAddEntityPacket(bot, 0, bot.blockPosition()));
-            } catch (Throwable ignored) {}
+        if (bot != null && !bot.isRemoved() && joiningPlayer != null && server != null) {
+            server.execute(() -> {
+                try {
+                    EnumSet<ClientboundPlayerInfoUpdatePacket.Action> actions = EnumSet.of(
+                            ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER,
+                            ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LISTED,
+                            ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LATENCY,
+                            ClientboundPlayerInfoUpdatePacket.Action.UPDATE_GAME_MODE,
+                            ClientboundPlayerInfoUpdatePacket.Action.UPDATE_DISPLAY_NAME
+                    );
+                    joiningPlayer.connection.send(new ClientboundPlayerInfoUpdatePacket(actions, List.of(bot)));
+                } catch (Throwable ignored) {}
+            });
         }
     }
 
