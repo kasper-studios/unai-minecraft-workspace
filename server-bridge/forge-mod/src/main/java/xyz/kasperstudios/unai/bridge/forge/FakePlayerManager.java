@@ -723,8 +723,7 @@ public class FakePlayerManager {
                 bot.swing(InteractionHand.MAIN_HAND, true);
                 server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(bot, 0));
 
-                net.minecraft.world.level.block.Block.dropResources(state, level, pos, null, bot, bot.getMainHandItem());
-                level.destroyBlock(pos, false, bot);
+                level.destroyBlock(pos, true, bot);
 
                 return "mined: " + blockId + " at (" + x + ", " + y + ", " + z + ")";
             }).get(2, java.util.concurrent.TimeUnit.SECONDS);
