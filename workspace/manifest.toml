@@ -1,8 +1,8 @@
 id = "minecraft"
 name = "Minecraft Workspace"
-version = "1.0.0"
+version = "1.2.0"
 entry = "run.py"
 api = 1
 author = "kasper-studios"
-description = "Native Minecraft Server Workspace for autonomous AI agents — execute console commands, send chat messages, monitor server status, inspect players"
+description = "Native Minecraft Server Workspace for autonomous AI agents — execute console commands, chat, 3D body simulation, survival inventory, building, bodyguard AI, autonomous treechopping, emotes and spatial memory"
 default_enabled = true

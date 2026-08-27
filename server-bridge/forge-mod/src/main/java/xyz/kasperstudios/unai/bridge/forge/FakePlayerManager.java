@@ -640,12 +640,21 @@ public class FakePlayerManager {
         
         // Verify ingredients in bot inventory
         boolean canCraft = true;
+        int invSize = bot.getInventory().getContainerSize();
+        int[] slotCounts = new int[invSize];
+        for (int i = 0; i < invSize; i++) {
+            slotCounts[i] = bot.getInventory().getItem(i).getCount();
+        }
+
+        List<Integer> slotsToConsume = new ArrayList<>();
         for (var ing : ingredients) {
             if (ing.isEmpty()) continue;
             boolean matched = false;
-            for (int i = 0; i < bot.getInventory().getContainerSize(); i++) {
+            for (int i = 0; i < invSize; i++) {
                 ItemStack invStack = bot.getInventory().getItem(i);
-                if (!invStack.isEmpty() && ing.test(invStack)) {
+                if (!invStack.isEmpty() && slotCounts[i] > 0 && ing.test(invStack)) {
+                    slotCounts[i]--;
+                    slotsToConsume.add(i);
                     matched = true;
                     break;
                 }
@@ -658,20 +667,15 @@ public class FakePlayerManager {
         
         if (!canCraft) return "error: missing required ingredients in bot inventory";
         
-        // Consume ingredients
-        for (var ing : ingredients) {
-            if (ing.isEmpty()) continue;
-            for (int i = 0; i < bot.getInventory().getContainerSize(); i++) {
-                ItemStack invStack = bot.getInventory().getItem(i);
-                if (!invStack.isEmpty() && ing.test(invStack)) {
+        server.execute(() -> {
+            for (int slot : slotsToConsume) {
+                ItemStack invStack = bot.getInventory().getItem(slot);
+                if (!invStack.isEmpty()) {
                     invStack.shrink(1);
-                    break;
                 }
             }
-        }
-        
-        // Add crafted result to bot inventory
-        bot.getInventory().add(resultStack);
+            bot.getInventory().add(resultStack);
+        });
         
         return "crafted: " + resultStack.getCount() + "x " + net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(resultStack.getItem());
     }
@@ -709,6 +713,7 @@ public class FakePlayerManager {
             for (int dy = -Math.min(r, 8); dy <= Math.min(r, 8); dy++) {
                 for (int dz = -r; dz <= r; dz++) {
                     BlockPos p = center.offset(dx, dy, dz);
+                    if (!level.hasChunkAt(p)) continue;
                     var state = level.getBlockState(p);
                     if (state.isAir()) continue;
                     String id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
@@ -823,85 +828,91 @@ public class FakePlayerManager {
         double distSq = bot.distanceToSqr(Vec3.atCenterOf(pos));
         if (distSq > 36.0) return "error: container too far (" + String.format(Locale.ROOT, "%.1fm", Math.sqrt(distSq)) + " > 6m)";
 
-        ServerLevel level = bot.serverLevel();
-        net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(pos);
-        if (!(be instanceof net.minecraft.world.Container container)) {
-            return "error: block at (" + x + ", " + y + ", " + z + ") is not a chest or container";
-        }
-
         String act = (action == null) ? "list" : action.toLowerCase(Locale.ROOT);
         int targetCount = (count == null || count <= 0) ? 64 : count;
 
-        switch (act) {
-            case "list" -> {
-                StringBuilder sb = new StringBuilder("[");
-                int added = 0;
-                for (int i = 0; i < container.getContainerSize(); i++) {
-                    ItemStack stack = container.getItem(i);
-                    if (!stack.isEmpty()) {
-                        if (added > 0) sb.append(",");
-                        String id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-                        sb.append("{\"slot\":").append(i)
-                          .append(",\"id\":\"").append(id)
-                          .append("\",\"count\":").append(stack.getCount())
-                          .append("}");
-                        added++;
-                    }
+        try {
+            return server.submit(() -> {
+                ServerLevel level = bot.serverLevel();
+                net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(pos);
+                if (!(be instanceof net.minecraft.world.Container container)) {
+                    return "error: block at (" + x + ", " + y + ", " + z + ") is not a chest or container";
                 }
-                sb.append("]");
-                return sb.toString();
-            }
-            case "deposit" -> {
-                int transferred = 0;
-                boolean depositAll = (itemId == null || itemId.isEmpty() || "all".equalsIgnoreCase(itemId));
-                var targetItem = depositAll ? null : net.minecraft.core.registries.BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.parse(itemId));
 
-                for (int i = 0; i < bot.getInventory().getContainerSize() && transferred < targetCount; i++) {
-                    ItemStack botStack = bot.getInventory().getItem(i);
-                    if (botStack.isEmpty()) continue;
-                    if (!depositAll && !botStack.is(targetItem)) continue;
-
-                    for (int cSlot = 0; cSlot < container.getContainerSize() && !botStack.isEmpty(); cSlot++) {
-                        ItemStack cStack = container.getItem(cSlot);
-                        if (cStack.isEmpty()) {
-                            int toMove = Math.min(botStack.getCount(), targetCount - transferred);
-                            container.setItem(cSlot, botStack.split(toMove));
-                            transferred += toMove;
-                        } else if (ItemStack.isSameItemSameComponents(botStack, cStack)) {
-                            int space = cStack.getMaxStackSize() - cStack.getCount();
-                            if (space > 0) {
-                                int toMove = Math.min(Math.min(botStack.getCount(), space), targetCount - transferred);
-                                cStack.grow(toMove);
-                                botStack.shrink(toMove);
-                                transferred += toMove;
+                switch (act) {
+                    case "list" -> {
+                        StringBuilder sb = new StringBuilder("[");
+                        int added = 0;
+                        for (int i = 0; i < container.getContainerSize(); i++) {
+                            ItemStack stack = container.getItem(i);
+                            if (!stack.isEmpty()) {
+                                if (added > 0) sb.append(",");
+                                String id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+                                sb.append("{\"slot\":").append(i)
+                                  .append(",\"id\":\"").append(id)
+                                  .append("\",\"count\":").append(stack.getCount())
+                                  .append("}");
+                                added++;
                             }
                         }
+                        sb.append("]");
+                        return sb.toString();
                     }
+                    case "deposit" -> {
+                        int transferred = 0;
+                        boolean depositAll = (itemId == null || itemId.isEmpty() || "all".equalsIgnoreCase(itemId));
+                        var targetItem = depositAll ? null : net.minecraft.core.registries.BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.parse(itemId));
+
+                        for (int i = 0; i < bot.getInventory().getContainerSize() && transferred < targetCount; i++) {
+                            ItemStack botStack = bot.getInventory().getItem(i);
+                            if (botStack.isEmpty()) continue;
+                            if (!depositAll && !botStack.is(targetItem)) continue;
+
+                            for (int cSlot = 0; cSlot < container.getContainerSize() && !botStack.isEmpty(); cSlot++) {
+                                ItemStack cStack = container.getItem(cSlot);
+                                if (cStack.isEmpty()) {
+                                    int toMove = Math.min(botStack.getCount(), targetCount - transferred);
+                                    container.setItem(cSlot, botStack.split(toMove));
+                                    transferred += toMove;
+                                } else if (ItemStack.isSameItemSameComponents(botStack, cStack)) {
+                                    int space = cStack.getMaxStackSize() - cStack.getCount();
+                                    if (space > 0) {
+                                        int toMove = Math.min(Math.min(botStack.getCount(), space), targetCount - transferred);
+                                        cStack.grow(toMove);
+                                        botStack.shrink(toMove);
+                                        transferred += toMove;
+                                    }
+                                }
+                            }
+                        }
+                        container.setChanged();
+                        return "deposited " + transferred + " items to container at (" + x + ", " + y + ", " + z + ")";
+                    }
+                    case "withdraw" -> {
+                        int transferred = 0;
+                        boolean withdrawAll = (itemId == null || itemId.isEmpty() || "all".equalsIgnoreCase(itemId));
+                        var targetItem = withdrawAll ? null : net.minecraft.core.registries.BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.parse(itemId));
+
+                        for (int cSlot = 0; cSlot < container.getContainerSize() && transferred < targetCount; cSlot++) {
+                            ItemStack cStack = container.getItem(cSlot);
+                            if (cStack.isEmpty()) continue;
+                            if (!withdrawAll && !cStack.is(targetItem)) continue;
+
+                            int toMove = Math.min(cStack.getCount(), targetCount - transferred);
+                            ItemStack taken = cStack.split(toMove);
+                            if (cStack.isEmpty()) container.setItem(cSlot, ItemStack.EMPTY);
+
+                            bot.getInventory().add(taken);
+                            transferred += toMove;
+                        }
+                        container.setChanged();
+                        return "withdrew " + transferred + " items from container at (" + x + ", " + y + ", " + z + ")";
+                    }
+                    default -> { return "error: unknown action " + act; }
                 }
-                container.setChanged();
-                return "deposited " + transferred + " items to container at (" + x + ", " + y + ", " + z + ")";
-            }
-            case "withdraw" -> {
-                int transferred = 0;
-                boolean withdrawAll = (itemId == null || itemId.isEmpty() || "all".equalsIgnoreCase(itemId));
-                var targetItem = withdrawAll ? null : net.minecraft.core.registries.BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.parse(itemId));
-
-                for (int cSlot = 0; cSlot < container.getContainerSize() && transferred < targetCount; cSlot++) {
-                    ItemStack cStack = container.getItem(cSlot);
-                    if (cStack.isEmpty()) continue;
-                    if (!withdrawAll && !cStack.is(targetItem)) continue;
-
-                    int toMove = Math.min(cStack.getCount(), targetCount - transferred);
-                    ItemStack taken = cStack.split(toMove);
-                    if (cStack.isEmpty()) container.setItem(cSlot, ItemStack.EMPTY);
-
-                    bot.getInventory().add(taken);
-                    transferred += toMove;
-                }
-                container.setChanged();
-                return "withdrew " + transferred + " items from container at (" + x + ", " + y + ", " + z + ")";
-            }
-            default -> { return "error: unknown action " + act; }
+            }).get(3, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Throwable t) {
+            return "error: container interact failed: " + t.getMessage();
         }
     }
 
@@ -919,30 +930,40 @@ public class FakePlayerManager {
             try {
                 int chopped = 0;
                 for (int attempt = 0; attempt < targetLogs * 2 && chopped < targetLogs; attempt++) {
+                    if (!isSpawned()) break;
                     String json = findBlocksJson("log", 16);
                     if (json.equals("[]")) break;
 
-                    java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"x\":(-?\\d+),\"y\":(-?\\d+),\"z\":(-?\\d+)").matcher(json);
-                    if (!m.find()) break;
+                    java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\{\"id\":\"[^\"]+\",\"x\":(-?\\d+),\"y\":(-?\\d+),\"z\":(-?\\d+),\"dist\":([0-9.]+)\\}").matcher(json);
+                    int bestX = 0, bestY = 999, bestZ = 0;
+                    boolean found = false;
+                    while (m.find()) {
+                        int x = Integer.parseInt(m.group(1));
+                        int y = Integer.parseInt(m.group(2));
+                        int z = Integer.parseInt(m.group(3));
+                        if (!found || y < bestY) {
+                            bestX = x;
+                            bestY = y;
+                            bestZ = z;
+                            found = true;
+                        }
+                    }
+                    if (!found) break;
 
-                    int x = Integer.parseInt(m.group(1));
-                    int y = Integer.parseInt(m.group(2));
-                    int z = Integer.parseInt(m.group(3));
-
-                    double dist = Math.sqrt(bot.distanceToSqr(x + 0.5, y + 0.5, z + 0.5));
+                    double dist = Math.sqrt(bot.distanceToSqr(bestX + 0.5, bestY + 0.5, bestZ + 0.5));
                     if (dist > 3.5) {
-                        navigateTo(x + 0.5, y, z + 0.5, 2.0f);
+                        navigateTo(bestX + 0.5, bestY, bestZ + 0.5, 2.0f);
                         int navWait = 0;
-                        while (isNavigating && navWait < 50) {
+                        while (isNavigating && navWait < 40) {
                             Thread.sleep(200);
                             navWait++;
                         }
                     }
 
-                    String breakRes = breakBlock(x, y, z);
+                    String breakRes = breakBlock(bestX, bestY, bestZ);
                     if (breakRes.startsWith("mined:")) {
                         chopped++;
-                        Thread.sleep(400);
+                        Thread.sleep(300);
                     }
                 }
             } catch (Throwable t) {
@@ -1135,6 +1156,8 @@ public class FakePlayerManager {
                         Monster.class,
                         new AABB(scanCenter.x - 10, scanCenter.y - 4, scanCenter.z - 10, scanCenter.x + 10, scanCenter.y + 4, scanCenter.z + 10),
                         m -> m.isAlive() && !m.isSpectator()
+                             && !(m instanceof net.minecraft.world.entity.monster.Creeper)
+                             && (!(m instanceof net.minecraft.world.entity.monster.EnderMan em) || em.isCreepy() || em.getTarget() != null)
                 );
 
                 if (!monsters.isEmpty()) {
