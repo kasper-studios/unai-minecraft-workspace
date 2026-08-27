@@ -723,7 +723,7 @@ public class FakePlayerManager {
                 bot.swing(InteractionHand.MAIN_HAND, true);
                 server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(bot, 0));
 
-                level.destroyBlock(pos, true, bot);
+                level.destroyBlock(pos, true);
 
                 return "mined: " + blockId + " at (" + x + ", " + y + ", " + z + ")";
             }).get(2, java.util.concurrent.TimeUnit.SECONDS);
