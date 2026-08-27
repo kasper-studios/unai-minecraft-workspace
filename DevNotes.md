@@ -76,6 +76,7 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 - [x] Container & Chest System (`bot.container_interact` for chest item list, deposit, and withdraw)
 - [x] Autonomous Bodyguard & Combat AI (`bot.guard` auto-targets hostile mobs in 10m, auto-eats food on low HP)
 - [x] Autonomous Woodchopper Routine (`bot.auto_chop` scans, navigates, and mines tree logs)
+- [x] Dynamic Autonomous Chunk Loader Engine (`bot.chunk_loader` configurable 0..8 chunk radius, tickets and forceloads 3D area around bot)
 - [x] Built and deployed `unai-bridge-forge-1.21.1-1.0.0.jar` to Frankfurt server (`nodefrankfurt.kasperstudios.xyz`)
 - [x] Verified end-to-end via Python Minecraft Workspace test runner
 
