@@ -533,7 +533,7 @@ class MinecraftWorkspace(Workspace):
             "x": {"type": "integer", "description": "Target X coordinate"},
             "y": {"type": "integer", "description": "Target Y coordinate"},
             "z": {"type": "integer", "description": "Target Z coordinate"},
-            "block_id": {"type": "string", "description": "Optional block ID e.g. 'minecraft:oak_planks', 'minecraft:cobblestone' (or empty for current held block)"}
+            "block_id": {"type": "string", "description": "Optional block ID e.g. 'minecraft:oak_planks', 'minecraft:blackstone' (or empty for current held block)"}
         },
         enabled_if=lambda ws: ws.is_connected,
     )
@@ -549,19 +549,50 @@ class MinecraftWorkspace(Workspace):
                 return await self._append_hud_if_enabled(f"Bot placed block: {msg}")
 
     @tool(
-        "minecraft.bot.container_interact",
-        description="Interact with a chest or container at coordinates (list items, deposit, withdraw)",
+        "minecraft.bot.fill_area",
+        description="Fill or repair a 3D box area with blocks from inventory (e.g. patching explosion craters or building floors/walls)",
         arguments={
-            "x": {"type": "integer", "description": "Container block X"},
-            "y": {"type": "integer", "description": "Container block Y"},
-            "z": {"type": "integer", "description": "Container block Z"},
-            "action": {"type": "string", "description": "Action: 'list' (view items), 'deposit' (put items into container), 'withdraw' (take items from container)"},
-            "item_id": {"type": "string", "description": "Item ID to deposit/withdraw e.g. 'minecraft:oak_log' or 'all' for all items"},
-            "count": {"type": "integer", "description": "Number of items to deposit/withdraw (default: 64)"}
+            "x1": {"type": "integer", "description": "Start X coordinate"},
+            "y1": {"type": "integer", "description": "Start Y coordinate"},
+            "z1": {"type": "integer", "description": "Start Z coordinate"},
+            "x2": {"type": "integer", "description": "End X coordinate"},
+            "y2": {"type": "integer", "description": "End Y coordinate"},
+            "z2": {"type": "integer", "description": "End Z coordinate"},
+            "block_id": {"type": "string", "description": "Block ID e.g. 'minecraft:blackstone', 'minecraft:cobblestone', 'minecraft:acacia_planks' (or empty for any block in inventory)", "default": ""},
+            "replace_air_only": {"type": "boolean", "description": "True to only replace air/replaceable blocks, False to overwrite all (default: True)", "default": True}
         },
         enabled_if=lambda ws: ws.is_connected,
     )
-    async def bot_container_interact(self, x: int, y: int, z: int, action: str = "list", item_id: str = "all", count: int = 64, reason: Optional[str] = None) -> str:
+    async def bot_fill_area(self, x1: int, y1: int, z1: int, x2: int, y2: int, z2: int, block_id: str = "", replace_air_only: bool = True, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/fill_area"
+        payload = {
+            "x1": str(x1), "y1": str(y1), "z1": str(z1),
+            "x2": str(x2), "y2": str(y2), "z2": str(z2),
+            "block_id": block_id,
+            "replace_air_only": "true" if replace_air_only else "false"
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "fill area failed"))
+                msg = data.get("message", "Filled area")
+                return await self._append_hud_if_enabled(f"Bot area building: {msg}")
+
+    @tool(
+        "minecraft.bot.container_interact",
+        description="Interact with a chest or container (list items, deposit, withdraw). Omit x,y,z to auto-target closest chest!",
+        arguments={
+            "action": {"type": "string", "description": "Action: 'list' (view items), 'deposit' (put items into container), 'withdraw' (take items from container)"},
+            "item_id": {"type": "string", "description": "Item ID to deposit/withdraw e.g. 'minecraft:oak_log' or 'all' for all items", "default": "all"},
+            "count": {"type": "integer", "description": "Number of items to deposit/withdraw (default: 64)", "default": 64},
+            "x": {"type": "integer", "description": "Container X coordinate (optional, 0 for closest chest)", "default": 0},
+            "y": {"type": "integer", "description": "Container Y coordinate (optional, 0 for closest chest)", "default": 0},
+            "z": {"type": "integer", "description": "Container Z coordinate (optional, 0 for closest chest)", "default": 0}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_container_interact(self, action: str = "list", item_id: str = "all", count: int = 64, x: int = 0, y: int = 0, z: int = 0, reason: Optional[str] = None) -> str:
         if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
         url = f"{self._base_url}/api/bot/container_interact"
         payload = {"x": str(x), "y": str(y), "z": str(z), "action": action, "item_id": item_id, "count": str(count)}

@@ -862,31 +862,69 @@ public class FakePlayerManager {
         return "placed: " + placedId + " at (" + x + ", " + y + ", " + z + ")";
     }
 
+    public synchronized String fillArea(int x1, int y1, int z1, int x2, int y2, int z2, String blockId, boolean replaceAirOnly) {
+        if (!isSpawned()) return "error: bot not spawned";
+        int minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
+        int minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
+        int minZ = Math.min(z1, z2), maxZ = Math.max(z1, z2);
+
+        int totalVolume = (maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
+        if (totalVolume > 128) return "error: area too large (" + totalVolume + " blocks > max 128)";
+
+        int placed = 0;
+        for (int y = minY; y <= maxY; y++) {
+            for (int x = minX; x <= maxX; x++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    BlockPos p = new BlockPos(x, y, z);
+                    var state = bot.serverLevel().getBlockState(p);
+                    if (replaceAirOnly && !state.isAir() && !state.canBeReplaced()) continue;
+                    String res = placeBlock(x, y, z, blockId);
+                    if (res.startsWith("placed:")) {
+                        placed++;
+                    } else if (res.contains("no block item in bot inventory") || res.contains("not found in bot inventory")) {
+                        return "placed " + placed + " blocks (ran out of building items in inventory)";
+                    }
+                }
+            }
+        }
+        return "placed " + placed + " blocks in area (" + minX + "," + minY + "," + minZ + " to " + maxX + "," + maxY + "," + maxZ + ")";
+    }
+
     public synchronized String containerInteract(int x, int y, int z, String action, String itemId, Integer count) {
         if (!isSpawned()) return "error: bot not spawned";
         BlockPos pos = new BlockPos(x, y, z);
+        if (x == 0 && y == 0 && z == 0) {
+            String chestsJson = findBlocksJson("chest", 6);
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"x\":(-?\\d+),\"y\":(-?\\d+),\"z\":(-?\\d+)").matcher(chestsJson);
+            if (m.find()) {
+                pos = new BlockPos(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3)));
+            } else {
+                return "error: no chest found within 6m radius";
+            }
+        }
         double distSq = bot.distanceToSqr(Vec3.atCenterOf(pos));
         if (distSq > 36.0) return "error: container too far (" + String.format(Locale.ROOT, "%.1fm", Math.sqrt(distSq)) + " > 6m)";
 
         String act = (action == null) ? "list" : action.toLowerCase(Locale.ROOT);
         int targetCount = (count == null || count <= 0) ? 64 : count;
+        final BlockPos finalPos = pos;
 
         try {
             return server.submit(() -> {
                 ServerLevel level = bot.serverLevel();
-                var state = level.getBlockState(pos);
+                var state = level.getBlockState(finalPos);
                 net.minecraft.world.Container container = null;
                 if (state.getBlock() instanceof net.minecraft.world.level.block.ChestBlock cb) {
-                    container = net.minecraft.world.level.block.ChestBlock.getContainer(cb, state, level, pos, false);
+                    container = net.minecraft.world.level.block.ChestBlock.getContainer(cb, state, level, finalPos, false);
                 }
                 if (container == null) {
-                    net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(pos);
+                    net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(finalPos);
                     if (be instanceof net.minecraft.world.Container c) {
                         container = c;
                     }
                 }
                 if (container == null) {
-                    return "error: block at (" + x + ", " + y + ", " + z + ") is not a chest or container";
+                    return "error: block at (" + finalPos.getX() + ", " + finalPos.getY() + ", " + finalPos.getZ() + ") is not a chest or container";
                 }
 
                 switch (act) {

@@ -218,6 +218,7 @@ public class ForgeBridgeMod {
         httpServer.createContext("/api/bot/craft", new BotCraftHandler());
         httpServer.createContext("/api/bot/break_block", new BotBreakBlockHandler());
         httpServer.createContext("/api/bot/place_block", new BotPlaceBlockHandler());
+        httpServer.createContext("/api/bot/fill_area", new BotFillAreaHandler());
         httpServer.createContext("/api/bot/container_interact", new BotContainerInteractHandler());
         httpServer.createContext("/api/bot/guard", new BotGuardHandler());
         httpServer.createContext("/api/bot/auto_chop", new BotAutoChopHandler());
@@ -846,6 +847,27 @@ public class ForgeBridgeMod {
             try { z = Integer.parseInt(extractJsonField(body, "z")); } catch (Exception ignored) {}
             String blockId = extractJsonField(body, "block_id");
             String res = FakePlayerManager.getInstance().placeBlock(x, y, z, blockId);
+            if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
+        }
+    }
+
+    private class BotFillAreaHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String body = readBody(exchange);
+            int x1 = 0, y1 = 0, z1 = 0, x2 = 0, y2 = 0, z2 = 0;
+            try { x1 = Integer.parseInt(extractJsonField(body, "x1")); } catch (Exception ignored) {}
+            try { y1 = Integer.parseInt(extractJsonField(body, "y1")); } catch (Exception ignored) {}
+            try { z1 = Integer.parseInt(extractJsonField(body, "z1")); } catch (Exception ignored) {}
+            try { x2 = Integer.parseInt(extractJsonField(body, "x2")); } catch (Exception ignored) {}
+            try { y2 = Integer.parseInt(extractJsonField(body, "y2")); } catch (Exception ignored) {}
+            try { z2 = Integer.parseInt(extractJsonField(body, "z2")); } catch (Exception ignored) {}
+            String blockId = extractJsonField(body, "block_id");
+            boolean replaceAirOnly = !"false".equalsIgnoreCase(extractJsonField(body, "replace_air_only"));
+
+            String res = FakePlayerManager.getInstance().fillArea(x1, y1, z1, x2, y2, z2, blockId, replaceAirOnly);
             if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
             else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
         }
