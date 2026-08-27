@@ -874,8 +874,18 @@ public class FakePlayerManager {
         try {
             return server.submit(() -> {
                 ServerLevel level = bot.serverLevel();
-                net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(pos);
-                if (!(be instanceof net.minecraft.world.Container container)) {
+                var state = level.getBlockState(pos);
+                net.minecraft.world.Container container = null;
+                if (state.getBlock() instanceof net.minecraft.world.level.block.ChestBlock cb) {
+                    container = net.minecraft.world.level.block.ChestBlock.getContainer(cb, state, level, pos, false);
+                }
+                if (container == null) {
+                    net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(pos);
+                    if (be instanceof net.minecraft.world.Container c) {
+                        container = c;
+                    }
+                }
+                if (container == null) {
                     return "error: block at (" + x + ", " + y + ", " + z + ") is not a chest or container";
                 }
 
@@ -901,7 +911,8 @@ public class FakePlayerManager {
                     case "deposit" -> {
                         int transferred = 0;
                         boolean depositAll = (itemId == null || itemId.isEmpty() || "all".equalsIgnoreCase(itemId));
-                        var targetItem = depositAll ? null : net.minecraft.core.registries.BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.parse(itemId));
+                        String normId = (!depositAll && !itemId.contains(":")) ? "minecraft:" + itemId : itemId;
+                        var targetItem = depositAll ? null : net.minecraft.core.registries.BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.tryParse(normId));
 
                         for (int i = 0; i < bot.getInventory().getContainerSize() && transferred < targetCount; i++) {
                             ItemStack botStack = bot.getInventory().getItem(i);
@@ -931,7 +942,8 @@ public class FakePlayerManager {
                     case "withdraw" -> {
                         int transferred = 0;
                         boolean withdrawAll = (itemId == null || itemId.isEmpty() || "all".equalsIgnoreCase(itemId));
-                        var targetItem = withdrawAll ? null : net.minecraft.core.registries.BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.parse(itemId));
+                        String normId = (!withdrawAll && !itemId.contains(":")) ? "minecraft:" + itemId : itemId;
+                        var targetItem = withdrawAll ? null : net.minecraft.core.registries.BuiltInRegistries.ITEM.get(net.minecraft.resources.ResourceLocation.tryParse(normId));
 
                         for (int cSlot = 0; cSlot < container.getContainerSize() && transferred < targetCount; cSlot++) {
                             ItemStack cStack = container.getItem(cSlot);
