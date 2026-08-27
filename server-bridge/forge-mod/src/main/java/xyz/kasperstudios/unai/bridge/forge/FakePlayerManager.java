@@ -706,22 +706,31 @@ public class FakePlayerManager {
     }
 
     public synchronized String breakBlock(int x, int y, int z) {
-        if (!isSpawned()) return "error: bot not spawned";
+        if (!isSpawned() || server == null) return "error: bot not spawned";
         BlockPos pos = new BlockPos(x, y, z);
         double distSq = bot.distanceToSqr(Vec3.atCenterOf(pos));
         if (distSq > 36.0) return "error: block too far (" + String.format(Locale.ROOT, "%.1fm", Math.sqrt(distSq)) + " > 6m)";
-        
-        var state = bot.serverLevel().getBlockState(pos);
-        if (state.isAir()) return "error: block is air";
-        String blockId = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
 
-        server.execute(() -> {
-            lookAt(x + 0.5, y + 0.5, z + 0.5, null, null);
-            bot.swing(InteractionHand.MAIN_HAND, true);
-            server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(bot, 0));
-            bot.gameMode.destroyBlock(pos);
-        });
-        return "mined: " + blockId + " at (" + x + ", " + y + ", " + z + ")";
+        try {
+            return server.submit(() -> {
+                if (!isSpawned()) return "error: bot not spawned";
+                ServerLevel level = bot.serverLevel();
+                var state = level.getBlockState(pos);
+                if (state.isAir()) return "error: block is air";
+                String blockId = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+
+                lookAt(x + 0.5, y + 0.5, z + 0.5, null, null);
+                bot.swing(InteractionHand.MAIN_HAND, true);
+                server.getPlayerList().broadcastAll(new ClientboundAnimatePacket(bot, 0));
+
+                net.minecraft.world.level.block.Block.dropResources(state, level, pos, null, bot, bot.getMainHandItem());
+                level.destroyBlock(pos, false, bot);
+
+                return "mined: " + blockId + " at (" + x + ", " + y + ", " + z + ")";
+            }).get(2, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Throwable t) {
+            return "error: breakBlock failed: " + t.getMessage();
+        }
     }
 
     public synchronized String findBlocksJson(String query, int radius) {
