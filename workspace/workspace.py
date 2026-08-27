@@ -686,6 +686,27 @@ class MinecraftWorkspace(Workspace):
                 return await self._append_hud_if_enabled(msg)
 
     @tool(
+        "minecraft.bot.status_indicator",
+        description="Set the visual 3D nameplate status indicator above the bot's head (thinking, mining, building, combat, navigating, afk, custom)",
+        arguments={
+            "status": {"type": "string", "description": "Status state: 'thinking', 'mining', 'building', 'combat', 'navigating', 'crafting', 'speaking', 'afk', 'idle'", "default": "idle"},
+            "prefix": {"type": "string", "description": "Optional custom prefix / emoji / icon before bot name (e.g. '§e[💭] ' or custom unicode font character)", "default": ""},
+            "suffix": {"type": "string", "description": "Optional custom suffix after bot name (e.g. ' §7(Thinking)')", "default": ""}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_status_indicator(self, status: str = "idle", prefix: str = "", suffix: str = "", reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/status_indicator"
+        payload = {"status": status, "prefix": prefix, "suffix": suffix}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "status indicator failed"))
+                msg = data.get("message", "Status updated")
+                return await self._append_hud_if_enabled(msg)
+
+    @tool(
         "minecraft.bot.find_blocks",
         description="Scan nearby area around the bot to find specific blocks (e.g. 'log', 'ore', 'table', 'dirt')",
         arguments={

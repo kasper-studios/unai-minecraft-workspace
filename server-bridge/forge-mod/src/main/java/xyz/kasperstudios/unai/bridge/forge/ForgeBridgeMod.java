@@ -224,6 +224,7 @@ public class ForgeBridgeMod {
         httpServer.createContext("/api/bot/auto_chop", new BotAutoChopHandler());
         httpServer.createContext("/api/bot/chunk_loader", new BotChunkLoaderHandler());
         httpServer.createContext("/api/bot/autonomous", new BotAutonomousHandler());
+        httpServer.createContext("/api/bot/status_indicator", new BotStatusIndicatorHandler());
         httpServer.createContext("/api/bot/find_blocks", new BotFindBlocksHandler());
         httpServer.createContext("/api/bot/navigate", new BotNavigateHandler());
         httpServer.createContext("/api/bot/nav_status", new BotNavStatusHandler());
@@ -964,6 +965,20 @@ public class ForgeBridgeMod {
                 if (rStr != null && !rStr.isEmpty()) radius = Integer.parseInt(rStr);
             } catch (Exception ignored) {}
             String res = FakePlayerManager.getInstance().setAutonomousMode(enabled, radius);
+            if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
+        }
+    }
+
+    private class BotStatusIndicatorHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String body = readBody(exchange);
+            String status = extractJsonField(body, "status");
+            String prefix = extractJsonField(body, "prefix");
+            String suffix = extractJsonField(body, "suffix");
+            String res = FakePlayerManager.getInstance().setStatusIndicator(status, prefix, suffix);
             if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
             else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
         }

@@ -32,6 +32,9 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.scores.PlayerTeam;
+import net.minecraft.world.scores.Scoreboard;
+import net.minecraft.network.protocol.game.ClientboundSetPlayerTeamPacket;
 import org.slf4j.Logger;
 
 import java.lang.reflect.Field;
@@ -254,6 +257,7 @@ public class FakePlayerManager {
         tetherHomePos = new BlockPos((int)Math.floor(fx), (int)Math.floor(fy), (int)Math.floor(fz));
         autonomousIdleTicks = 0;
         autonomousMode = true;
+        setStatusIndicator("idle", null, null);
 
         return "spawned:" + fName;
     }
@@ -1056,6 +1060,67 @@ public class FakePlayerManager {
         } catch (Throwable t) {
             return "error: container interact failed: " + t.getMessage();
         }
+    }
+
+    private String currentStatus = "idle";
+
+    public synchronized String setStatusIndicator(String status, String customPrefix, String customSuffix) {
+        if (!isSpawned() || server == null) return "error: bot not spawned";
+        this.currentStatus = (status == null || status.isBlank()) ? "idle" : status.toLowerCase(Locale.ROOT);
+
+        server.execute(() -> {
+            try {
+                Scoreboard scoreboard = server.getScoreboard();
+                PlayerTeam team = scoreboard.getPlayerTeam("unai_bot");
+                boolean isNew = false;
+                if (team == null) {
+                    team = scoreboard.addPlayerTeam("unai_bot");
+                    isNew = true;
+                }
+
+                if (!team.getPlayers().contains(bot.getScoreboardName())) {
+                    scoreboard.addPlayerToTeam(bot.getScoreboardName(), team);
+                    server.getPlayerList().broadcastAll(ClientboundSetPlayerTeamPacket.createPlayerPacket(team, bot.getScoreboardName(), ClientboundSetPlayerTeamPacket.Action.ADD));
+                }
+
+                String prefix = "";
+                String suffix = "";
+
+                if (customPrefix != null && !customPrefix.isEmpty()) {
+                    prefix = customPrefix;
+                } else {
+                    prefix = switch (currentStatus) {
+                        case "thinking", "thought" -> "§e[💭] ";
+                        case "mining", "breaking" -> "§6[⛏️] ";
+                        case "building", "placing" -> "§a[🔨] ";
+                        case "combat", "fight", "attack" -> "§c[⚔️] ";
+                        case "navigating", "walking", "running" -> "§b[🏃] ";
+                        case "crafting" -> "§d[📦] ";
+                        case "speaking", "chatting" -> "§f[💬] ";
+                        case "afk", "idle" -> "§7[💤] ";
+                        default -> "§f[" + currentStatus + "] ";
+                    };
+                }
+
+                if (customSuffix != null && !customSuffix.isEmpty()) {
+                    suffix = customSuffix;
+                }
+
+                team.setPlayerPrefix(Component.literal(prefix));
+                team.setPlayerSuffix(Component.literal(suffix));
+                server.getPlayerList().broadcastAll(ClientboundSetPlayerTeamPacket.createAddOrModifyPacket(team, isNew));
+
+                bot.setCustomName(Component.literal(prefix + bot.getName().getString() + suffix));
+                server.getPlayerList().broadcastAll(new ClientboundPlayerInfoUpdatePacket(
+                        EnumSet.of(ClientboundPlayerInfoUpdatePacket.Action.UPDATE_DISPLAY_NAME),
+                        List.of(bot)
+                ));
+            } catch (Throwable t) {
+                LOGGER.warn("[UnAI-Bridge] Status indicator error: " + t.getMessage());
+            }
+        });
+
+        return "status_indicator: " + currentStatus;
     }
 
     public synchronized String setGuardMode(boolean enabled, String targetPlayer) {
