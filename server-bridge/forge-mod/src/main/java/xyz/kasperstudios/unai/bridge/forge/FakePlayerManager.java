@@ -1285,31 +1285,39 @@ public class FakePlayerManager {
     }
 
     public synchronized String navigateTo(double x, double y, double z, float radius) {
-        if (!isSpawned()) return "error: bot not spawned";
-        ServerLevel level = bot.serverLevel();
-        BlockPos start = bot.blockPosition();
-        BlockPos end = new BlockPos((int) Math.floor(x), (int) Math.floor(y), (int) Math.floor(z));
+        if (!isSpawned() || server == null) return "error: bot not spawned";
+        try {
+            return server.submit(() -> {
+                if (!isSpawned()) return "error: bot not spawned";
+                ServerLevel level = bot.serverLevel();
+                BlockPos start = bot.blockPosition();
+                BlockPos end = new BlockPos((int) Math.floor(x), (int) Math.floor(y), (int) Math.floor(z));
 
-        AStarPathfinder.PathOptions opt = new AStarPathfinder.PathOptions();
-        opt.targetRadius = radius;
+                AStarPathfinder.PathOptions opt = new AStarPathfinder.PathOptions();
+                opt.targetRadius = radius;
+                opt.maxIterations = 600;
 
-        List<BlockPos> path = AStarPathfinder.findPath(level, start, end, opt);
-        if (path == null || path.isEmpty()) {
-            navStatus = "NO_PATH_FOUND";
-            return "error: no path found to target";
+                List<BlockPos> path = AStarPathfinder.findPath(level, start, end, opt);
+                if (path == null || path.isEmpty()) {
+                    navStatus = "NO_PATH_FOUND";
+                    return "error: no path found to target";
+                }
+
+                currentPath = path;
+                pathIndex = 0;
+                targetBlockPos = end;
+                targetRadius = radius;
+                isNavigating = true;
+                navStatus = "NAVIGATING";
+                stuckTicks = 0;
+                lastPos = bot.position();
+
+                LOGGER.info("[UnAI-Bridge] A* Path computed: {} nodes to ({}, {}, {})", path.size(), end.getX(), end.getY(), end.getZ());
+                return "navigating: path length " + path.size();
+            }).get(2, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Throwable t) {
+            return "error: navigate failed: " + t.getMessage();
         }
-
-        currentPath = path;
-        pathIndex = 0;
-        targetBlockPos = end;
-        targetRadius = radius;
-        isNavigating = true;
-        navStatus = "NAVIGATING";
-        stuckTicks = 0;
-        lastPos = bot.position();
-
-        LOGGER.info("[UnAI-Bridge] A* Path computed: {} nodes to ({}, {}, {})", path.size(), end.getX(), end.getY(), end.getZ());
-        return "navigating: path length " + path.size();
     }
 
     public synchronized String stopMove() {
