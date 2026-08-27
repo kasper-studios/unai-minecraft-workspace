@@ -29,6 +29,7 @@ import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
@@ -72,6 +73,11 @@ public class FakePlayerManager {
 
     private volatile boolean isGuardMode = false;
     private volatile String guardTargetPlayer = null;
+
+    // Chunk loader state
+    private volatile int chunkLoadRadius = 0;
+    private final Set<ChunkPos> loadedChunks = Collections.synchronizedSet(new HashSet<>());
+    private ChunkPos lastBotChunkPos = null;
 
     private static final FakePlayerManager INSTANCE = new FakePlayerManager();
 
@@ -405,6 +411,7 @@ public class FakePlayerManager {
             }
         });
         bot = null;
+        clearLoadedChunks();
         stopMove();
         return "despawned";
     }
@@ -974,6 +981,69 @@ public class FakePlayerManager {
         return "auto_chop started: target " + targetLogs + " logs";
     }
 
+    public synchronized String setChunkLoaderRadius(int radius) {
+        if (!isSpawned()) return "error: bot not spawned";
+        int clamped = Math.max(0, Math.min(8, radius));
+        this.chunkLoadRadius = clamped;
+        this.lastBotChunkPos = null;
+        updateChunkLoading();
+
+        int totalChunks = (clamped == 0) ? 0 : (2 * clamped + 1) * (2 * clamped + 1);
+        return "chunk_loader: radius=" + clamped + " (" + totalChunks + " chunks in area, " + loadedChunks.size() + " forced)";
+    }
+
+    public synchronized String getChunkLoaderStatus() {
+        int r = chunkLoadRadius;
+        int totalChunks = (r == 0) ? 0 : (2 * r + 1) * (2 * r + 1);
+        ChunkPos cp = isSpawned() ? bot.chunkPosition() : null;
+        return "{\"enabled\":" + (r > 0) + ",\"radius\":" + r + ",\"total_chunks\":" + totalChunks + ",\"active_forced\":" + loadedChunks.size() + (cp != null ? ",\"center_chunk\":[" + cp.x + "," + cp.z + "]" : "") + "}";
+    }
+
+    public void clearLoadedChunks() {
+        if (loadedChunks.isEmpty()) return;
+        if (bot != null && bot.serverLevel() != null) {
+            ServerLevel level = bot.serverLevel();
+            for (ChunkPos cp : new HashSet<>(loadedChunks)) {
+                server.execute(() -> level.setChunkForced(cp.x, cp.z, false));
+            }
+        }
+        loadedChunks.clear();
+        lastBotChunkPos = null;
+    }
+
+    public void updateChunkLoading() {
+        if (!isSpawned() || chunkLoadRadius <= 0) {
+            clearLoadedChunks();
+            return;
+        }
+
+        ChunkPos currentChunk = bot.chunkPosition();
+        if (currentChunk.equals(lastBotChunkPos) && !loadedChunks.isEmpty()) return;
+        lastBotChunkPos = currentChunk;
+
+        ServerLevel level = bot.serverLevel();
+        Set<ChunkPos> newChunks = new HashSet<>();
+        for (int dx = -chunkLoadRadius; dx <= chunkLoadRadius; dx++) {
+            for (int dz = -chunkLoadRadius; dz <= chunkLoadRadius; dz++) {
+                newChunks.add(new ChunkPos(currentChunk.x + dx, currentChunk.z + dz));
+            }
+        }
+
+        for (ChunkPos cp : new HashSet<>(loadedChunks)) {
+            if (!newChunks.contains(cp)) {
+                server.execute(() -> level.setChunkForced(cp.x, cp.z, false));
+                loadedChunks.remove(cp);
+            }
+        }
+
+        for (ChunkPos cp : newChunks) {
+            if (!loadedChunks.contains(cp)) {
+                server.execute(() -> level.setChunkForced(cp.x, cp.z, true));
+                loadedChunks.add(cp);
+            }
+        }
+    }
+
     public synchronized String equip(String slot, String itemId) {
         if (!isSpawned()) return "error: bot not spawned";
         var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(
@@ -1068,6 +1138,11 @@ public class FakePlayerManager {
 
         // Tick Perception Engine buffer
         PerceptionEngine.getInstance().tick(bot);
+
+        // Update Chunk Loader
+        if (bot.tickCount % 20 == 0) {
+            updateChunkLoading();
+        }
 
         // Rotation easing
         if (!Float.isNaN(targetYaw)) {

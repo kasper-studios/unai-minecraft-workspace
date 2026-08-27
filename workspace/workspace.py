@@ -616,6 +616,25 @@ class MinecraftWorkspace(Workspace):
                 return await self._append_hud_if_enabled(msg)
 
     @tool(
+        "minecraft.bot.chunk_loader",
+        description="Configure autonomous chunk loader radius around the bot (0 to disable, 1..8 radius in chunks)",
+        arguments={
+            "radius": {"type": "integer", "description": "Chunk radius around bot (0 to disable, 1 = 3x3=9 chunks, 2 = 5x5=25 chunks, up to 8)", "default": 2}
+        },
+        enabled_if=lambda ws: ws.is_connected,
+    )
+    async def bot_chunk_loader(self, radius: int = 2, reason: Optional[str] = None) -> str:
+        if not self._base_url or not self._api_key: raise RuntimeError("Not connected")
+        url = f"{self._base_url}/api/bot/chunk_loader"
+        payload = {"radius": str(radius)}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self._get_headers(), json=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"): raise RuntimeError(data.get("error", "chunk loader failed"))
+                msg = data.get("message", "Chunk loader updated")
+                return await self._append_hud_if_enabled(msg)
+
+    @tool(
         "minecraft.bot.find_blocks",
         description="Scan nearby area around the bot to find specific blocks (e.g. 'log', 'ore', 'table', 'dirt')",
         arguments={

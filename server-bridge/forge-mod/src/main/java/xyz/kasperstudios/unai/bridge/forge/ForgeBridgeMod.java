@@ -221,6 +221,7 @@ public class ForgeBridgeMod {
         httpServer.createContext("/api/bot/container_interact", new BotContainerInteractHandler());
         httpServer.createContext("/api/bot/guard", new BotGuardHandler());
         httpServer.createContext("/api/bot/auto_chop", new BotAutoChopHandler());
+        httpServer.createContext("/api/bot/chunk_loader", new BotChunkLoaderHandler());
         httpServer.createContext("/api/bot/find_blocks", new BotFindBlocksHandler());
         httpServer.createContext("/api/bot/navigate", new BotNavigateHandler());
         httpServer.createContext("/api/bot/nav_status", new BotNavStatusHandler());
@@ -897,6 +898,27 @@ public class ForgeBridgeMod {
                 if (cStr != null && !cStr.isEmpty()) count = Integer.parseInt(cStr);
             } catch (Exception ignored) {}
             String res = FakePlayerManager.getInstance().autoChop(count);
+            if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
+            else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
+        }
+    }
+
+    private class BotChunkLoaderHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                String json = FakePlayerManager.getInstance().getChunkLoaderStatus();
+                sendJsonResponse(exchange, 200, json);
+                return;
+            }
+            String body = readBody(exchange);
+            int radius = 0;
+            try {
+                String rStr = extractJsonField(body, "radius");
+                if (rStr != null && !rStr.isEmpty()) radius = Integer.parseInt(rStr);
+            } catch (Exception ignored) {}
+            String res = FakePlayerManager.getInstance().setChunkLoaderRadius(radius);
             if (res.startsWith("error")) sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
             else sendJsonResponse(exchange, 200, "{\"ok\": true, \"message\": \"" + escapeJson(res) + "\"}");
         }
