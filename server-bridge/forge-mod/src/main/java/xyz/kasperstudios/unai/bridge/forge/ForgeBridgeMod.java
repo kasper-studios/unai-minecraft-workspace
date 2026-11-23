@@ -73,12 +73,49 @@ public class ForgeBridgeMod {
         LOGGER.info("[UnAI-Bridge] Forge 1.21.1 Bridge mod registered.");
     }
 
+    private final List<OutputStream> sseSubscribers = new CopyOnWriteArrayList<>();
+
+    public void broadcastSse(String type, String sender, String message) {
+        String data = "event: " + type + "\ndata: {\"type\":\"" + escapeJson(type) + "\",\"sender\":\"" + escapeJson(sender) + "\",\"message\":\"" + escapeJson(message) + "\",\"ts\":" + System.currentTimeMillis() + "}\n\n";
+        byte[] bytes = data.getBytes(StandardCharsets.UTF_8);
+
+        for (OutputStream os : sseSubscribers) {
+            try {
+                os.write(bytes);
+                os.flush();
+            } catch (Exception e) {
+                sseSubscribers.remove(os);
+            }
+        }
+    }
+
     public void addEvent(String type, String sender, String message) {
         long id = eventIdCounter.getAndIncrement();
         long now = System.currentTimeMillis();
         eventHistory.add(new ChatEventItem(id, now, type, sender, message));
         while (eventHistory.size() > 500) {
             eventHistory.remove(0);
+        }
+        broadcastSse(type, sender, message);
+    }
+
+    @SubscribeEvent
+    public void onLivingDamage(net.minecraftforge.event.entity.living.LivingDamageEvent event) {
+        if (event.getEntity() instanceof ServerPlayer sp) {
+            String victim = sp.getName().getString();
+            String attacker = event.getSource().getEntity() != null ? event.getSource().getEntity().getName().getString() : "environment";
+            float damage = event.getAmount();
+            float hpLeft = Math.max(0, sp.getHealth() - damage);
+            addEvent("damage", victim, String.format("{\"victim\":\"%s\",\"attacker\":\"%s\",\"damage\":%.1f,\"hp\":%.1f}", victim, attacker, damage, hpLeft));
+        }
+    }
+
+    @SubscribeEvent
+    public void onBlockBreak(net.minecraftforge.event.level.BlockEvent.BreakEvent event) {
+        if (event.getPlayer() != null) {
+            String player = event.getPlayer().getName().getString();
+            String block = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(event.getState().getBlock()).toString();
+            addEvent("block_break", player, block + " at " + event.getPos().getX() + "," + event.getPos().getY() + "," + event.getPos().getZ());
         }
     }
 
@@ -236,6 +273,20 @@ public class ForgeBridgeMod {
         httpServer.createContext("/api/bot/target", new BotTargetHandler());
         httpServer.createContext("/api/bot/frames", new BotFramesHandler());
         httpServer.createContext("/api/bot/hud", new BotHudHandler());
+
+        // KHScript Autonomous Execution Engine
+        httpServer.createContext("/api/bot/script/run", new BotScriptRunHandler());
+        httpServer.createContext("/api/bot/script/stop", new BotScriptStopHandler());
+        httpServer.createContext("/api/bot/script/status", new BotScriptStatusHandler());
+
+        // Generic Container & Mod GUI Interaction
+        httpServer.createContext("/api/bot/menu/inspect", new BotMenuInspectHandler());
+        httpServer.createContext("/api/bot/menu/click", new BotMenuClickHandler());
+        httpServer.createContext("/api/bot/menu/button", new BotMenuButtonHandler());
+        httpServer.createContext("/api/bot/menu/close", new BotMenuCloseHandler());
+
+        // Real-Time Event Stream (SSE)
+        httpServer.createContext("/api/events/stream", new EventsStreamHandler());
 
         httpServer.start();
     }
@@ -1177,4 +1228,152 @@ public class ForgeBridgeMod {
             sendJsonResponse(exchange, 200, json);
         }
     }
+
+    private class BotScriptRunHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                sendJsonResponse(exchange, 405, "{\"ok\": false, \"error\": \"Method not allowed\"}");
+                return;
+            }
+            String body = readBody(exchange);
+            String name = extractJsonField(body, "name");
+            if (name == null || name.isEmpty()) name = "unnamed_script";
+            String code = extractJsonField(body, "code");
+            if (code == null || code.trim().isEmpty()) {
+                sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"Missing code field\"}");
+                return;
+            }
+            xyz.kasperstudios.unai.bridge.script.ScriptRunner.runScriptAsync(name, code);
+            sendJsonResponse(exchange, 200, "{\"ok\": true, \"status\": \"started\", \"name\": \"" + escapeJson(name) + "\"}");
+        }
+    }
+
+    private class BotScriptStopHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            xyz.kasperstudios.unai.bridge.script.ScriptRunner.stopActiveScript();
+            sendJsonResponse(exchange, 200, "{\"ok\": true, \"status\": \"stopped\"}");
+        }
+    }
+
+    private class BotScriptStatusHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            boolean running = xyz.kasperstudios.unai.bridge.script.ScriptRunner.isRunning();
+            String name = xyz.kasperstudios.unai.bridge.script.ScriptRunner.getActiveScriptName();
+            var logs = xyz.kasperstudios.unai.bridge.script.ScriptLogger.getInstance().getLogs();
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"ok\": true, \"running\": ").append(running)
+              .append(", \"name\": ").append(name != null ? "\"" + escapeJson(name) + "\"" : "null")
+              .append(", \"logs\": [");
+            for (int i = 0; i < logs.size(); i++) {
+                if (i > 0) sb.append(",");
+                var entry = logs.get(i);
+                sb.append("{\"ts\":").append(entry.timestamp)
+                  .append(",\"level\":\"").append(entry.level)
+                  .append("\",\"msg\":\"").append(escapeJson(entry.message)).append("\"}");
+            }
+            sb.append("]}");
+            sendJsonResponse(exchange, 200, sb.toString());
+        }
+    }
+
+    private class BotMenuInspectHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String json = FakePlayerManager.getInstance().inspectMenuJson();
+            sendJsonResponse(exchange, 200, json);
+        }
+    }
+
+    private class BotMenuClickHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                sendJsonResponse(exchange, 405, "{\"ok\": false, \"error\": \"Method not allowed\"}");
+                return;
+            }
+            String body = readBody(exchange);
+            int slot = 0;
+            int button = 0;
+            String type = "PICKUP";
+            try { slot = Integer.parseInt(extractJsonField(body, "slot")); } catch (Exception ignored) {}
+            try { button = Integer.parseInt(extractJsonField(body, "button")); } catch (Exception ignored) {}
+            String extractedType = extractJsonField(body, "type");
+            if (extractedType != null && !extractedType.isEmpty()) type = extractedType;
+
+            String res = FakePlayerManager.getInstance().clickMenu(slot, button, type);
+            if (!"ok".equals(res)) {
+                sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
+            } else {
+                sendJsonResponse(exchange, 200, "{\"ok\": true}");
+            }
+        }
+    }
+
+    private class BotMenuButtonHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                sendJsonResponse(exchange, 405, "{\"ok\": false, \"error\": \"Method not allowed\"}");
+                return;
+            }
+            String body = readBody(exchange);
+            int buttonId = 0;
+            try { buttonId = Integer.parseInt(extractJsonField(body, "button_id")); } catch (Exception ignored) {}
+
+            String res = FakePlayerManager.getInstance().buttonMenu(buttonId);
+            if (!"ok".equals(res)) {
+                sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
+            } else {
+                sendJsonResponse(exchange, 200, "{\"ok\": true}");
+            }
+        }
+    }
+
+    private class BotMenuCloseHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+            String res = FakePlayerManager.getInstance().closeMenu();
+            if (!"ok".equals(res)) {
+                sendJsonResponse(exchange, 400, "{\"ok\": false, \"error\": \"" + escapeJson(res) + "\"}");
+            } else {
+                sendJsonResponse(exchange, 200, "{\"ok\": true}");
+            }
+        }
+    }
+
+    private class EventsStreamHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!checkAuth(exchange)) return;
+
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=UTF-8");
+            exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+            exchange.getResponseHeaders().set("Connection", "keep-alive");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            exchange.sendResponseHeaders(200, 0);
+
+            OutputStream os = exchange.getResponseBody();
+            sseSubscribers.add(os);
+
+            try {
+                String init = "event: connected\ndata: {\"status\": \"streaming\", \"ts\": " + System.currentTimeMillis() + "}\n\n";
+                os.write(init.getBytes(StandardCharsets.UTF_8));
+                os.flush();
+            } catch (Exception e) {
+                sseSubscribers.remove(os);
+            }
+        }
+    }
+
 }

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "unai_bridge",
+  "version": "1.0.0",
+  "name": "UnAI Minecraft Bridge",
+  "description": "Native Minecraft Server Workspace bridge for autonomous AI agents on Fabric 1.21.1",
+  "authors": [
+    "KasperStudios"
+  ],
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "xyz.kasperstudios.unai.bridge.fabric.FabricBridgeMod"
+    ],
+    "client": [
+      "xyz.kasperstudios.unai.bridge.fabric.client.FabricClientBridgeMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.14.0",
+    "minecraft": ">=1.16.5",
+    "java": ">=17"
+  }
+}

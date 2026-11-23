@@ -32,7 +32,9 @@ target/
 *.class
 *.jar
 !build-artifacts/*.jar
+!launcher/assets/*.jar
 *.log
+*.db
 
 # IDE
 .idea/

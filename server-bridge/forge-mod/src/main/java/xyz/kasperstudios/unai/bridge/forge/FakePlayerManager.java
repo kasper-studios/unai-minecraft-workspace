@@ -1,5 +1,13 @@
 package xyz.kasperstudios.unai.bridge.forge;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import net.minecraft.world.inventory.ClickType;
+
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.inventory.DataSlot;
+
 import com.mojang.authlib.GameProfile;
 import com.mojang.authlib.properties.Property;
 import com.mojang.logging.LogUtils;
@@ -1633,7 +1641,141 @@ public class FakePlayerManager {
         }
     }
 
-    /** Dummy GamePacketListener: ignores packet flushes and tick loops. */
+    
+    public synchronized String inspectMenuJson() {
+        if (!isSpawned()) return "{\"ok\": false, \"error\": \"Bot not spawned\"}";
+        AbstractContainerMenu menu = bot.containerMenu;
+        if (menu == null) return "{\"ok\": false, \"error\": \"No menu open\"}";
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"ok\": true,");
+        sb.append("\"containerId\":").append(menu.containerId).append(",");
+        sb.append("\"menuClass\":\"").append(menu.getClass().getSimpleName()).append("\",");
+        sb.append("\"isInventory\":").append(menu == bot.inventoryMenu).append(",");
+        sb.append("\"slotCount\":").append(menu.slots.size()).append(",");
+
+        sb.append("\"slots\":[");
+        for (int i = 0; i < menu.slots.size(); i++) {
+            if (i > 0) sb.append(",");
+            Slot slot = menu.slots.get(i);
+            ItemStack item = slot.getItem();
+            sb.append("{");
+            sb.append("\"index\":").append(slot.index).append(",");
+            sb.append("\"hasItem\":").append(!item.isEmpty()).append(",");
+            if (!item.isEmpty()) {
+                String itemId = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item.getItem()).toString();
+                sb.append("\"item\":\"").append(itemId).append("\",");
+                sb.append("\"count\":").append(item.getCount()).append(",");
+                sb.append("\"name\":\"").append(escapeJson(item.getHoverName().getString())).append("\"");
+            } else {
+                sb.append("\"item\":null,\"count\":0");
+            }
+            sb.append("}");
+        }
+        sb.append("],");
+
+        sb.append("\"dataSlots\":[");
+        List<DataSlot> dataSlots = null;
+        try {
+            java.lang.reflect.Field f = AbstractContainerMenu.class.getDeclaredField("dataSlots");
+            f.setAccessible(true);
+            dataSlots = (List<DataSlot>) f.get(menu);
+        } catch (Exception ignored) {}
+        for (int i = 0; dataSlots != null && i < dataSlots.size(); i++) {
+            if (i > 0) sb.append(",");
+            sb.append(dataSlots.get(i).get());
+        }
+        sb.append("]}");
+
+        return sb.toString();
+    }
+
+    public synchronized String clickMenu(int slotId, int button, String clickTypeStr) {
+        if (!isSpawned()) return "error: bot not spawned";
+        if (server == null) return "error: server not ready";
+
+        ClickType clickType;
+        try {
+            clickType = ClickType.valueOf(clickTypeStr.toUpperCase());
+        } catch (Exception e) {
+            clickType = ClickType.PICKUP;
+        }
+
+        final ClickType finalType = clickType;
+        CompletableFuture<String> future = new CompletableFuture<>();
+        server.execute(() -> {
+            try {
+                AbstractContainerMenu menu = bot.containerMenu;
+                if (menu == null) {
+                    future.complete("error: no container menu open");
+                    return;
+                }
+                if (slotId < -1 || slotId >= menu.slots.size()) {
+                    future.complete("error: slot index out of bounds (" + slotId + ")");
+                    return;
+                }
+                menu.clicked(slotId, button, finalType, bot);
+                future.complete("ok");
+            } catch (Throwable t) {
+                future.complete("error: click failed: " + t.getMessage());
+            }
+        });
+
+        try {
+            return future.get(5, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return "error: timeout clicking menu: " + e.getMessage();
+        }
+    }
+
+    public synchronized String buttonMenu(int buttonId) {
+        if (!isSpawned()) return "error: bot not spawned";
+        if (server == null) return "error: server not ready";
+
+        CompletableFuture<String> future = new CompletableFuture<>();
+        server.execute(() -> {
+            try {
+                AbstractContainerMenu menu = bot.containerMenu;
+                if (menu == null) {
+                    future.complete("error: no container menu open");
+                    return;
+                }
+                boolean res = menu.clickMenuButton(bot, buttonId);
+                future.complete(res ? "ok" : "button action returned false");
+            } catch (Throwable t) {
+                future.complete("error: button action failed: " + t.getMessage());
+            }
+        });
+
+        try {
+            return future.get(5, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return "error: timeout clicking button: " + e.getMessage();
+        }
+    }
+
+    public synchronized String closeMenu() {
+        if (!isSpawned()) return "error: bot not spawned";
+        if (server == null) return "error: server not ready";
+
+        CompletableFuture<String> future = new CompletableFuture<>();
+        server.execute(() -> {
+            try {
+                bot.closeContainer();
+                future.complete("ok");
+            } catch (Throwable t) {
+                future.complete("error: closeContainer failed: " + t.getMessage());
+            }
+        });
+
+        try {
+            return future.get(5, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return "error: timeout closing container: " + e.getMessage();
+        }
+    }
+
+/** Dummy GamePacketListener: ignores packet flushes and tick loops. */
     private static class DummyGamePacketListener extends ServerGamePacketListenerImpl {
         public DummyGamePacketListener(MinecraftServer server, Connection connection, ServerPlayer player, CommonListenerCookie cookie) {
             super(server, connection, player, cookie);

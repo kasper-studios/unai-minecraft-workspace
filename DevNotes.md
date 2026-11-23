@@ -50,6 +50,10 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 ### Status summary
 - v1.0.0 (Core Server REST Bridge, Chat Events, Unicode Fix) - COMPLETE & DEPLOYED.
 - v1.1.0 (Fake Player Avatar, Skin System, Modular HUD Telemetry, KasHub A* Pathfinding, 3D ASCII & Rotated 2D Perception, Spatial Waypoint Memory Layer) - COMPLETE & DEPLOYED LIVE.
+- v2.0.0 (Standalone Rust Launcher, Dual-Sided Client/Server Mod, Reverse WebSocket RPC, Modrinth API, Ely.by & Headless xvfb, Deployed to nodefrankfurt & Dirom Connected) - COMPLETE & VERIFIED.
+  * Verified live headless client launch on Minecraft 1.20.1 (crow-test with Fabric + KubeJS + Rhino).
+  * Auto-connected to remote server `188.186.25.220:25565`, spawned in world at `X:-115.5 Y:68 Z:387.3`, broadcasted chat message via reverse WebSocket RPC.
+  * Synapse report delivered to Dirom tablet (`192.168.1.102:8767/api/v1/event`).
 
 ### Implemented
 - [x] Architecture & protocol design
@@ -79,6 +83,11 @@ Enable AI agents to exist in the Minecraft world as full-featured virtual player
 - [x] Dynamic Autonomous Chunk Loader Engine (`bot.chunk_loader` configurable 0..8 chunk radius, tickets and forceloads 3D area around bot)
 - [x] Built and deployed `unai-bridge-forge-1.21.1-1.0.0.jar` to Frankfurt server (`nodefrankfurt.kasperstudios.xyz`)
 - [x] Verified end-to-end via Python Minecraft Workspace test runner
+- [x] Modern Minecraft (>= 1.20) version matrix enforcement with deterministic rejection of deprecated legacy versions
+- [x] Dynamic Client Java Code Injection (`eval` / `minecraft.client.eval`) with CrashGuard, main-thread execution, and stacktrace diagnostics
+- [x] Comprehensive Autonomous Agent Mod Debugging API Guide (`AGENT_API_GUIDE.md`)
+- [x] Standalone Launcher Documentation (`launcher/README.md`)
+- [x] Launcher unit test suite for version support matrix, embedded bridge resolution, and RPC responses (100% passing)
 
 ---
 
@@ -137,3 +146,45 @@ Tested on `nodefrankfurt.kasperstudios.xyz`:
 6. `bot.say`: Broadcast in-game message `<DiromPrime> Тест зрения, 3D A* и HUD пройден успешно!`.
 7. `locations.*`: Saved `home`, `mine`, `nether_portal`, computed live Euclidean distance from bot, and executed `locations.goto('home')`.
 8. `HUD`: Confirmed automatic attachment of unread chat and vitals to tool results without dedicated polling calls.
+
+---
+
+## 6. v2.0.0 Client Bridge & Standalone Launcher Architecture
+
+### Key Requirements
+1. **Repo & Releases**:
+   - Launcher source lives in workspace repo: `wsrepos/unai-minecraft-workspace/launcher/` (`unai-mc-launcher` Rust crate).
+   - Pre-compiled binaries published directly to GitHub releases alongside mod jars.
+2. **Dual-Sided Unified Mod & Multi-Loader Auto-Installation**:
+   - Single `.jar` per loader supports both server-side and client-side operation.
+   - Built-in bridge JARs for **Fabric 1.21.1** and **Forge 1.21.1** are embedded directly inside the launcher binary (`include_bytes!`).
+   - **Auto-Installation on Instance Creation**: When an instance is created (`instance create <name> --loader <fabric|forge|neoforge>`), the launcher dynamically detects the requested loader and auto-places the matching bridge jar (`unai-bridge-fabric-...` or `unai-bridge-forge-...`) into the instance's `mods/` directory.
+   - For versions or loaders not bundled in the binary (e.g. 1.20.1 or future drops), the launcher automatically fetches the matching jar from GitHub Releases (`kasper-studios/unai-minecraft-workspace/releases`) into the local bridges cache. Zero manual setup required.
+3. **Full Mod Lifecycle & Modrinth Integration**:
+   - Agents can install any mod by Modrinth slug/name (`unai-mc-launcher mod install <instance> sodium`), direct HTTP URL, or local file.
+   - Search mods on Modrinth via REST (`GET /api/modrinth/search`) or CLI (`unai-mc-launcher mod search`).
+   - Enable/disable mods dynamically (`.jar` <-> `.jar.disabled`) and remove mods.
+4. **Standalone UnAI Launcher (`unai-mc-launcher`)**:
+   - Zero UnAI runtime / Python dependency: runnable standalone by custom agent systems or CLI scripts.
+   - Default instances directory: `~/.unai/minecraft/instances/`.
+   - Fully configurable via CLI (`unai-mc-launcher config set ...`) and global flags (`--data-dir`, `--port`).
+   - Supports Ely.by skins via `-javaagent:authlib-injector.jar=https://auth.ely.by` and offline/cracked auth.
+   - Headless client mode via `xvfb-run` for low-resource 24/7 background operation.
+
+### Reverse WebSocket RPC Protocol
+- Mod connects to Launcher: `ws://127.0.0.1:<port>/game_bridge`
+- Handshake: `{"op": "handshake", "token": "<token>", "version": "1.21.1", "side": "client"}`
+- Request-Response RPC with correlation `id`:
+  - Launcher -> Mod: `{"id": "req_1", "method": "<name>", "params": {...}}`
+  - Mod -> Launcher: `{"id": "req_1", "ok": true, "result": {...}}` or `{"id": "req_1", "ok": false, "error": {"code": "...", "message": "..."}}`
+- Asynchronous push events (chat, health/damage, disconnect, death):
+  - Mod -> Launcher: `{"event": "chat", "data": {...}}`
+
+### Client gameplay control expansion (in progress; not E2E-verified)
+- The Fabric client bridge now exposes actual client inventory snapshots, open-screen/container contents, loaded and tab-list players, held-item use, container-slot clicks, bounded normal keyboard input (including hotbar selection), melee attack/swing, chat/commands, and server connection RPCs.
+- Unsupported `action` values now return `UNSUPPORTED_ACTION` instead of a fabricated `executed: true` result.
+- The launcher daemon binds to loopback and no longer enables permissive CORS. A daemon-specific port override is propagated into the launched client bridge endpoint.
+- The active Fabric client jar was built through KasHub's existing `buildUnaiBridgeJar` source set and embedded into the launcher asset. This repository's `server-bridge/fabric-mod` currently has no standalone Gradle build files.
+- Launcher RPC envelope tests cover flattened success payloads and error responses. They do not prove live client behavior.
+- Live game verification is still pending: no client is attached. The local launcher configuration currently defaults to `offline` auth; do not treat that as an authenticated Microsoft/Mojang profile or impersonate a player. Confirm the usable MineBlaze login path before the live test.
+

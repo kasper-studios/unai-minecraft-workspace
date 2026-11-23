@@ -30,6 +30,10 @@ def _get_session_file() -> Path:
     return _get_data_dir() / "session.json"
 
 
+def _get_launcher_file() -> Path:
+    return _get_data_dir() / "launcher.json"
+
+
 def _get_hud_config_file() -> Path:
     return _get_data_dir() / "hud_config.json"
 
@@ -62,6 +66,7 @@ class MinecraftWorkspace(Workspace):
         self._api_key: Optional[str] = None
         self._base_url: Optional[str] = None
         self._server_info: Optional[Dict[str, Any]] = None
+        self._launcher_url: Optional[str] = None
         self._hud_enabled: bool = True
         self._hud_modules: List[str] = ["chat", "vitals", "position", "target"]
         self._load_session()
@@ -79,6 +84,13 @@ class MinecraftWorkspace(Workspace):
                 self._server_info = data.get("server_info")
             except Exception:
                 pass
+        launcher_file = _get_launcher_file()
+        if launcher_file.exists():
+            try:
+                launcher_data = json.loads(launcher_file.read_text(encoding="utf-8"))
+                self._launcher_url = launcher_data.get("base_url")
+            except Exception:
+                self._launcher_url = None
 
     def _load_hud_config(self) -> None:
         hf = _get_hud_config_file()
@@ -152,6 +164,123 @@ class MinecraftWorkspace(Workspace):
             pass
 
         return result
+
+    # ====================================================================
+    # Local Minecraft Client / Launcher Tools
+    # ====================================================================
+
+    async def _launcher_rpc(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if not self._launcher_url:
+            raise RuntimeError("Minecraft launcher is not connected. Call minecraft.launcher.connect first.")
+        url = f"{self._launcher_url}/api/bot/{method}"
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+            async with session.post(url, json=params or {}) as resp:
+                try:
+                    data = await resp.json()
+                except Exception:
+                    data = {"error": await resp.text()}
+                if resp.status >= 400 or not data.get("ok", False):
+                    raise RuntimeError(data.get("error", f"Launcher RPC {method} failed ({resp.status})"))
+                return data
+
+    @tool(
+        "minecraft.launcher.connect",
+        description="Connect to the local UnAI Minecraft launcher daemon for client-side gameplay tools",
+        arguments={
+            "host": {"type": "string", "description": "Launcher host (normally 127.0.0.1)", "default": "127.0.0.1"},
+            "port": {"type": "integer", "description": "Launcher daemon port (default: 25585)", "default": 25585},
+        },
+        enabled_if=lambda ws: not ws._launcher_url,
+    )
+    async def launcher_connect(self, host: str = "127.0.0.1", port: int = 25585, reason: Optional[str] = None) -> Dict[str, Any]:
+        clean_host = host.strip()
+        if not clean_host or any(ch in clean_host for ch in "/?#@"):
+            raise RuntimeError("Invalid launcher host")
+        base_url = f"http://{clean_host}:{int(port)}"
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            async with session.get(f"{base_url}/api/status") as resp:
+                if resp.status >= 400:
+                    raise RuntimeError(f"Launcher status check failed ({resp.status})")
+                status = await resp.json()
+        if status.get("launcher") != "online":
+            raise RuntimeError("Endpoint responded, but it is not an UnAI Minecraft launcher")
+        self._launcher_url = base_url
+        _get_launcher_file().write_text(json.dumps({"base_url": base_url, "connected_at": time.time()}, indent=2), encoding="utf-8")
+        return {"connected": True, "base_url": base_url, "bridge_connected": bool(status.get("bridge_connected")), "client_info": status.get("client_info")}
+
+    @tool("minecraft.launcher.disconnect", description="Disconnect from the client launcher without stopping Minecraft", arguments={}, enabled_if=lambda ws: bool(ws._launcher_url))
+    async def launcher_disconnect(self, reason: Optional[str] = None) -> Dict[str, Any]:
+        self._launcher_url = None
+        path = _get_launcher_file()
+        if path.exists(): path.unlink()
+        return {"disconnected": True, "game_stopped": False}
+
+    @tool("minecraft.client.status", description="Read live Minecraft client status and player vitals", arguments={}, enabled_if=lambda ws: bool(ws._launcher_url))
+    async def client_status(self, reason: Optional[str] = None) -> Dict[str, Any]:
+        return await self._launcher_rpc("status")
+
+    @tool("minecraft.client.inventory", description="Read the actual local player's inventory and selected hotbar slot", arguments={}, enabled_if=lambda ws: bool(ws._launcher_url))
+    async def client_inventory(self, reason: Optional[str] = None) -> Dict[str, Any]:
+        return await self._launcher_rpc("inventory")
+
+    @tool("minecraft.client.screen", description="Inspect the current Minecraft screen, title, container slots and item names", arguments={}, enabled_if=lambda ws: bool(ws._launcher_url))
+    async def client_screen(self, reason: Optional[str] = None) -> Dict[str, Any]:
+        return await self._launcher_rpc("screen")
+
+    @tool("minecraft.client.players", description="List online players from the server tab list plus client-loaded entities", arguments={}, enabled_if=lambda ws: bool(ws._launcher_url))
+    async def client_players(self, reason: Optional[str] = None) -> Dict[str, Any]:
+        return await self._launcher_rpc("players")
+
+    @tool("minecraft.client.use_item", description="Use the held main-hand item (equivalent to right-click/use)", arguments={}, enabled_if=lambda ws: bool(ws._launcher_url))
+    async def client_use_item(self, reason: Optional[str] = None) -> Dict[str, Any]:
+        return await self._launcher_rpc("use_item")
+
+    @tool("minecraft.client.input", description="Press normal Minecraft movement/action keys briefly", arguments={
+        "keys": {"type": "array", "items": {"type": "string"}, "description": "Keys: forward/back/left/right, jump, sneak, sprint, attack, use, drop, inventory, hotbar_1..hotbar_9"},
+        "hold_ms": {"type": "integer", "description": "Press duration in milliseconds (50-5000; default 150)", "default": 150},
+    }, enabled_if=lambda ws: bool(ws._launcher_url))
+    async def client_input(self, keys: List[str], hold_ms: int = 150, reason: Optional[str] = None) -> Dict[str, Any]:
+        allowed = {"forward", "back", "left", "right", "jump", "sneak", "sprint", "attack", "use", "drop", "inventory"}
+        allowed.update(f"hotbar_{index}" for index in range(1, 10))
+        clean = [key.strip().lower() for key in keys]
+        if not clean or len(clean) > 8 or any(key not in allowed for key in clean):
+            raise RuntimeError("Provide 1-8 supported Minecraft input keys")
+        if hold_ms < 50 or hold_ms > 5000:
+            raise RuntimeError("hold_ms must be between 50 and 5000")
+        return await self._launcher_rpc("input", {"keys": clean, "hold_ms": hold_ms})
+
+    @tool("minecraft.client.click_slot", description="Click a slot in the currently open Minecraft container/menu", arguments={
+        "slot": {"type": "integer", "description": "Container slot index"},
+        "button": {"type": "integer", "description": "Mouse button (0 left, 1 right)"},
+        "click_type": {"type": "string", "description": "Minecraft click type, normally PICKUP", "default": "PICKUP"},
+    }, enabled_if=lambda ws: bool(ws._launcher_url))
+    async def client_click_slot(self, slot: int, button: int = 0, click_type: str = "PICKUP", reason: Optional[str] = None) -> Dict[str, Any]:
+        if slot < 0 or button not in (0, 1):
+            raise RuntimeError("Slot must be non-negative; button must be 0 or 1")
+        if click_type.upper() not in {"PICKUP", "QUICK_MOVE", "SWAP", "CLONE", "THROW", "QUICK_CRAFT", "PICKUP_ALL"}:
+            raise RuntimeError("Invalid Minecraft click type")
+        return await self._launcher_rpc("click_slot", {"slot": slot, "button": button, "click_type": click_type})
+
+    @tool("minecraft.client.chat", description="Send player chat text or a slash command through the authenticated Minecraft client", arguments={
+        "message": {"type": "string", "description": "Chat text or slash command, e.g. /msg Player hello"}
+    }, enabled_if=lambda ws: bool(ws._launcher_url))
+    async def client_chat(self, message: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        if not message.strip(): raise RuntimeError("Message cannot be empty")
+        return await self._launcher_rpc("chat", {"message": message})
+
+    @tool("minecraft.client.connect_server", description="Connect the running Minecraft client to a multiplayer server", arguments={
+        "address": {"type": "string", "description": "Server hostname, optionally with port"}
+    }, enabled_if=lambda ws: bool(ws._launcher_url))
+    async def client_connect_server(self, address: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        if not address.strip(): raise RuntimeError("Server address cannot be empty")
+        return await self._launcher_rpc("connect_server", {"address": address.strip()})
+
+    @tool("minecraft.client.eval", description="Inject and execute custom Java code or reflection snippet inside the live Minecraft client for atomic mod debugging", arguments={
+        "code": {"type": "string", "description": "Java code or expression to execute on the Minecraft client main thread"}
+    }, enabled_if=lambda ws: bool(ws._launcher_url))
+    async def client_eval(self, code: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        if not code.strip(): raise RuntimeError("Java code cannot be empty")
+        return await self._launcher_rpc("eval", {"code": code.strip()})
 
     # ====================================================================
     # Auth & Connection Tools (ADR-0004)
@@ -323,7 +452,10 @@ class MinecraftWorkspace(Workspace):
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=self._get_headers()) as resp:
                 data = await resp.json()
-                res = data.get("status", {})
+                # The client bridge returns the status payload flat
+                # ({"in_game": ..., "x": ...}); only some payloads nest it
+                # under "status".
+                res = data.get("status") or data
                 return await self._append_hud_if_enabled(res)
 
     @tool(

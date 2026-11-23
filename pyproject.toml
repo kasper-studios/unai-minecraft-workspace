@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "unai-minecraft-workspace"
-version = "1.0.0"
-description = "Native Minecraft Server Workspace for autonomous AI agents"
+version = "2.0.0"
+description = "Native Minecraft Server & Client Workspace for autonomous AI agents — live mod debugging, headless gameplay automation, reverse RPC bridge"
 readme = "README.md"
 authors = [{ name = "kasper-studios", email = "dimakukic1@gmail.com" }]
 license = { text = "MIT" }
