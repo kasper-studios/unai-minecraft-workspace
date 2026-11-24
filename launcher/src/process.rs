@@ -63,8 +63,34 @@ impl ProcessSupervisor {
     }
 
     pub fn find_java_binary(_game_version: &str) -> Result<PathBuf> {
-        // Prefer Java 21 first since our compiled Bridge Mod bytecode requires class version 65 (Java 21).
-        // Fabric Loader 1.20.1 runs completely fine on Java 21.
+        let exe_name = if cfg!(windows) { "java.exe" } else { "java" };
+
+        // 1. Check JAVA_HOME
+        if let Ok(jh) = std::env::var("JAVA_HOME") {
+            let bin = PathBuf::from(jh).join("bin").join(exe_name);
+            if bin.exists() {
+                return Ok(bin);
+            }
+        }
+
+        // 2. Windows-specific standard JDK locations
+        if cfg!(windows) {
+            let program_files = std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".to_string());
+            for vendor in &["Java", "Eclipse Adoptium", "Microsoft", "BellSoft", "Amazon Corretto", "Zulu"] {
+                let base = PathBuf::from(&program_files).join(vendor);
+                if let Ok(entries) = fs::read_dir(&base) {
+                    for entry in entries.flatten() {
+                        let p = entry.path().join("bin").join("java.exe");
+                        if p.exists() {
+                            return Ok(p);
+                        }
+                    }
+                }
+            }
+            return Ok(PathBuf::from(exe_name));
+        }
+
+        // 3. Linux-specific openjdk paths (prefer Java 21)
         let j21_ubuntu = PathBuf::from("/usr/lib/jvm/java-21-openjdk-amd64/bin/java");
         if j21_ubuntu.exists() {
             return Ok(j21_ubuntu);
@@ -73,14 +99,6 @@ impl ProcessSupervisor {
         if j21_arch.exists() {
             return Ok(j21_arch);
         }
-
-        if let Ok(jh) = std::env::var("JAVA_HOME") {
-            let bin = PathBuf::from(jh).join("bin").join("java");
-            if bin.exists() {
-                return Ok(bin);
-            }
-        }
-
         let j17 = PathBuf::from("/usr/lib/jvm/java-17-openjdk-amd64/bin/java");
         if j17.exists() {
             return Ok(j17);
@@ -90,7 +108,7 @@ impl ProcessSupervisor {
             return Ok(j17_arch);
         }
 
-        Ok(PathBuf::from("java"))
+        Ok(PathBuf::from(exe_name))
     }
 
     pub async fn launch(
@@ -134,11 +152,13 @@ impl ProcessSupervisor {
         } else {
             let mut c = Command::new(java_bin);
             // Ensure GUI environment variables are inherited or set on Linux
-            if std::env::var("DISPLAY").is_err() {
-                c.env("DISPLAY", ":0");
-            }
-            if std::env::var("WAYLAND_DISPLAY").is_err() {
-                c.env("WAYLAND_DISPLAY", "wayland-1");
+            if !cfg!(windows) {
+                if std::env::var("DISPLAY").is_err() {
+                    c.env("DISPLAY", ":0");
+                }
+                if std::env::var("WAYLAND_DISPLAY").is_err() {
+                    c.env("WAYLAND_DISPLAY", "wayland-1");
+                }
             }
             c
         };
@@ -276,7 +296,8 @@ impl ProcessSupervisor {
 
         classpath_entries.extend(cp_set);
 
-        let full_classpath = classpath_entries.join(":");
+        let cp_sep = if cfg!(windows) { ";" } else { ":" };
+        let full_classpath = classpath_entries.join(cp_sep);
         cmd.arg("-cp").arg(full_classpath);
         info!("[Process] Selected Main Class: {}", main_class);
         cmd.arg(main_class);
@@ -345,7 +366,8 @@ fn collect_jars(dir: &Path, jars: &mut HashSet<String>) {
 }
 
 fn which_tool(name: &str) -> bool {
-    Command::new("which")
+    let checker = if cfg!(windows) { "where" } else { "which" };
+    Command::new(checker)
         .arg(name)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
